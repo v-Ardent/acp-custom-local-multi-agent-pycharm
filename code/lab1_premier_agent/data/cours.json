@@ -1,0 +1,11 @@
+[
+  {"nom": "Architecture agentique", "prof": "C. Charlier", "local": "A201", "jour": "lundi", "heure_debut": "08:30", "heure_fin": "10:30"},
+  {"nom": "Programmation Python avancée", "prof": "M. Dubois", "local": "Labo L3", "jour": "lundi", "heure_debut": "10:45", "heure_fin": "12:45"},
+  {"nom": "Bases de données", "prof": "S. Lambert", "local": "B105", "jour": "lundi", "heure_debut": "13:45", "heure_fin": "15:45"},
+  {"nom": "Réseaux et sécurité", "prof": "A. Mertens", "local": "Labo L1", "jour": "mardi", "heure_debut": "08:30", "heure_fin": "10:30"},
+  {"nom": "Anglais technique", "prof": "J. Smith", "local": "C012", "jour": "mardi", "heure_debut": "10:45", "heure_fin": "12:45"},
+  {"nom": "Gestion de projet", "prof": "L. Renard", "local": "A104", "jour": "mercredi", "heure_debut": "08:30", "heure_fin": "10:30"},
+  {"nom": "Labo orchestrateurs d'agents IA", "prof": "C. Janssens", "local": "Labo L3", "jour": "jeudi", "heure_debut": "13:45", "heure_fin": "17:45"},
+  {"nom": "Droit et éthique du numérique", "prof": "N. Collard", "local": "Auditoire 2", "jour": "vendredi", "heure_debut": "08:30", "heure_fin": "10:30"},
+  {"nom": "Développement web", "prof": "M. Dubois", "local": "Labo L2", "jour": "vendredi", "heure_debut": "10:45", "heure_fin": "12:45"}
+]
