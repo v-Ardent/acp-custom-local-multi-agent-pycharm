@@ -1,0 +1,26 @@
+[
+  {"matricule": "E24001", "prenom": "Léa", "nom": "Martin", "section": "3 INTAR",
+   "absences": []},
+  {"matricule": "E24002", "prenom": "Yanis", "nom": "Dupont", "section": "3 INTAR",
+   "absences": [
+     {"date": "2026-09-14", "cours": "Bases de données", "justifiee": true, "motif": "certificat médical"},
+     {"date": "2026-09-21", "cours": "Bases de données", "justifiee": false, "motif": ""}
+   ]},
+  {"matricule": "E24003", "prenom": "Emma", "nom": "Lefèvre", "section": "3 INTAR",
+   "absences": [
+     {"date": "2026-09-08", "cours": "Réseaux et sécurité", "justifiee": false, "motif": ""},
+     {"date": "2026-09-15", "cours": "Réseaux et sécurité", "justifiee": false, "motif": ""},
+     {"date": "2026-09-22", "cours": "Réseaux et sécurité", "justifiee": false, "motif": ""},
+     {"date": "2026-09-29", "cours": "Réseaux et sécurité", "justifiee": false, "motif": ""},
+     {"date": "2026-09-23", "cours": "Gestion de projet", "justifiee": true, "motif": "convocation officielle"}
+   ]},
+  {"matricule": "E24004", "prenom": "Noah", "nom": "Peeters", "section": "3 INTAR",
+   "absences": [
+     {"date": "2026-09-17", "cours": "Labo orchestrateurs d'agents IA", "justifiee": false, "motif": ""}
+   ]},
+  {"matricule": "E24005", "prenom": "Inès", "nom": "Benali", "section": "3 INTAR",
+   "absences": [
+     {"date": "2026-09-11", "cours": "Droit et éthique du numérique", "justifiee": true, "motif": "certificat médical"},
+     {"date": "2026-09-18", "cours": "Droit et éthique du numérique", "justifiee": true, "motif": "certificat médical"}
+   ]}
+]

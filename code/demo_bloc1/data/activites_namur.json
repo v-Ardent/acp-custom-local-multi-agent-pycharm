@@ -1,0 +1,11 @@
+[
+  {"nom": "Visite des souterrains de la Citadelle", "type": "intérieur", "prix_par_personne": 12, "duree_h": 1.5, "groupe_max": 30, "description": "Visite guidée des galeries souterraines de la Citadelle de Namur."},
+  {"nom": "Balade sur la Citadelle et téléphérique", "type": "extérieur", "prix_par_personne": 8, "duree_h": 2, "groupe_max": 60, "description": "Montée en téléphérique puis promenade guidée sur les remparts, vue sur la Meuse et la Sambre."},
+  {"nom": "Musée Félicien Rops", "type": "intérieur", "prix_par_personne": 5, "duree_h": 1.5, "groupe_max": 25, "description": "Musée consacré au graveur namurois Félicien Rops, visite guidée pour groupes."},
+  {"nom": "Kayak sur la Meuse", "type": "extérieur", "prix_par_personne": 18, "duree_h": 2.5, "groupe_max": 24, "description": "Descente encadrée en kayak biplace au départ de Dinant ou de Namur."},
+  {"nom": "Escape game au centre-ville", "type": "intérieur", "prix_par_personne": 22, "duree_h": 1, "groupe_max": 30, "description": "Plusieurs salles en parallèle, équipes de 5 à 6 joueurs."},
+  {"nom": "Croisière en bateau sur la Meuse", "type": "extérieur", "prix_par_personne": 10, "duree_h": 1, "groupe_max": 80, "description": "Promenade commentée en bateau sur la Meuse au départ du port de Namur."},
+  {"nom": "Musée africain de Namur", "type": "intérieur", "prix_par_personne": 4, "duree_h": 1.5, "groupe_max": 40, "description": "Collections sur l'Afrique centrale et atelier pour groupes."},
+  {"nom": "Laser game", "type": "intérieur", "prix_par_personne": 15, "duree_h": 1, "groupe_max": 24, "description": "Parties en équipes, salle couverte dans la zone de Namur."},
+  {"nom": "Rallye photo dans le vieux Namur", "type": "extérieur", "prix_par_personne": 0, "duree_h": 2, "groupe_max": 100, "description": "Jeu de piste gratuit dans les ruelles du centre historique (organisé par la classe)."}
+]
