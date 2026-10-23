@@ -1,5 +1,3 @@
-- show tool calling in real-time and perhaps thinking
-
 # project
 
 - agent 1 = the validator (test, security, etc.)

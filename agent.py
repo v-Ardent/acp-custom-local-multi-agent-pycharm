@@ -8,7 +8,6 @@ import json
 from mcp import ClientSession
 import logging
 from tools import CORE_TOOLS, SYSTEM_PROMPT
-from acp import update_user_message_text
 from RAG import rag, TOOLS
 from acp import (
     PROTOCOL_VERSION,
@@ -21,7 +20,8 @@ from acp import (
     run_agent,
     start_tool_call,
     update_tool_call,
-    update_agent_message_text
+    update_agent_message_text,
+    update_user_message_text,
 )
 from acp.interfaces import Client
 from acp.schema import (
@@ -31,7 +31,7 @@ from acp.schema import (
     McpServerStdio,
     SseMcpServer,
     AgentCapabilities, PromptCapabilities, McpCapabilities, SessionCapabilities,
-    AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities
+    AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities, UsageUpdate, Cost
 )
 
 RACINE = Path(__file__).resolve().parent.parent
@@ -42,6 +42,8 @@ OLLAMA_MODEL = "gemma4:e4b"
 
 MAX_ACTIVE_DISCOVERED = 6
 MAX_STEPS = 8
+
+MAX_CONTEXT_SIZE = 16384
 
 def extract_text(block: Any) -> str:
     if isinstance(block, dict):
@@ -70,6 +72,7 @@ class NoesisAgent(Agent):
         self._discovered: dict[str, dict[str, dict]] = {}
         self._history: dict[str, list[dict]] = {}
         self._mcp_cfg: HttpMcpServer | None = None
+        self.context_size = 0
 
 
     async def _run_mcp(self) -> None:
@@ -250,10 +253,12 @@ class NoesisAgent(Agent):
                     messages=messages,
                     tools=self._active_tools(session_id),
                     think=True,
-                    options={"num_ctx": 16384},
+                    options={"num_ctx": MAX_CONTEXT_SIZE},
                 )
                 msg = response.message
                 messages.append(msg.model_dump(exclude_none=True))
+
+                await self._send(session_id, update=UsageUpdate(used=((response.eval_count or 0) + (response.prompt_eval_count or 0)), size=MAX_CONTEXT_SIZE, cost=Cost(amount=0, currency="euros", _meta=None), field_meta=None, session_update="usage_update"))
 
                 calls = msg.tool_calls or []
                 if not calls:
