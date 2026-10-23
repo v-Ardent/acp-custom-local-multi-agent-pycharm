@@ -7,7 +7,7 @@ from ollama import AsyncClient
 import json
 from mcp import ClientSession
 import logging
-from tools import CORE_TOOLS, CORE_NAMES, SYSTEM_PROMPT
+from tools import CORE_TOOLS, SYSTEM_PROMPT
 from acp import update_user_message_text
 from RAG import rag, TOOLS
 from acp import (
@@ -187,14 +187,16 @@ class NoesisAgent(Agent):
         try:
             if name == "search_memory":
                 hits = await asyncio.to_thread(self._rag.search_memory, **args)
-                logging.info("Found hits",hits)
-
+                logging.info("Found hits: %s", hits)
                 if args.get("collection") == TOOLS:
                     for h in hits:
                         discovered[h["id"]] = {
                             "type": "function",
-                            "function": {"name": h["id"], "description": h["text"],
-                                         "parameters": h["schema"]},
+                            "function": {
+                                "name": h["id"],
+                                "description": h.get("description") or h["text"],
+                                "parameters": h["input_schema"],
+                            },
                         }
                     while len(discovered) > MAX_ACTIVE_DISCOVERED:
                         discovered.pop(next(iter(discovered)))
@@ -205,7 +207,6 @@ class NoesisAgent(Agent):
                 return await asyncio.to_thread(self._rag.add_to_collection, **args)
             if name == "update_collection":
                 return await asyncio.to_thread(self._rag.update_collection, **args)
-            logging.info("454")
 
             if name in discovered and self._mcp:
                 result = await self._mcp.call_tool(name, args)
@@ -217,6 +218,7 @@ class NoesisAgent(Agent):
 
             return f"Error: unknown tool '{name}'. Use search_memory(collection='tools') to find it."
         except Exception as e:
+            logging.exception("tool %s failed (args=%s)", name, args)
             return f"Error calling {name}: {e}"
 
 
@@ -257,6 +259,7 @@ class NoesisAgent(Agent):
                 await self._conn.session_update(session_id, update_user_message_text("tools calling ended"))
 
         except Exception as exc:
+            logging.info(exc)
             await self._conn.session_update(session_id, update_user_message_text(str(exc)))
 
         return PromptResponse(stop_reason="end_turn", usage=None, field_meta=None)
