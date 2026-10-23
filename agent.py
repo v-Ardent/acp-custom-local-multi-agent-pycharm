@@ -21,7 +21,7 @@ from acp import (
     start_tool_call,
     update_tool_call,
     update_agent_message_text,
-    update_user_message_text,
+    update_user_message_text, update_agent_thought,
 )
 from acp.interfaces import Client
 from acp.schema import (
@@ -31,7 +31,7 @@ from acp.schema import (
     McpServerStdio,
     SseMcpServer,
     AgentCapabilities, PromptCapabilities, McpCapabilities, SessionCapabilities,
-    AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities, UsageUpdate, Cost
+    AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities, UsageUpdate, Cost, TextContentBlock
 )
 
 RACINE = Path(__file__).resolve().parent.parent
@@ -43,7 +43,7 @@ OLLAMA_MODEL = "gemma4:e4b"
 MAX_ACTIVE_DISCOVERED = 6
 MAX_STEPS = 8
 
-MAX_CONTEXT_SIZE = 16384
+MAX_CONTEXT_SIZE = 131072
 
 def extract_text(block: Any) -> str:
     if isinstance(block, dict):
@@ -235,7 +235,7 @@ class NoesisAgent(Agent):
             return f"Error calling {name}: {e}"
 
 
-    async def prompt(self, session_id, prompt, **kwargs):
+    async def prompt(self, session_id: str, prompt: Any, **kwargs: Any) -> PromptResponse:
         self._sessions.add(session_id)
         user_message = "".join(extract_text(b) for b in prompt)
 
@@ -248,45 +248,101 @@ class NoesisAgent(Agent):
             await self._get_mcp()
 
             for _ in range(MAX_STEPS):
-                response = await self._llm.chat(
+                thought_parts: list[str] = []
+                content_parts: list[str] = []
+                tool_calls: list = []
+                prompt_eval_count = 0
+                eval_count = 0
+
+                async for chunk in await self._llm.chat(
                     model=OLLAMA_MODEL,
                     messages=messages,
                     tools=self._active_tools(session_id),
                     think=True,
                     options={"num_ctx": MAX_CONTEXT_SIZE},
+                    stream=True,
+                ):
+                    thinking: str | None = getattr(chunk.message, "thinking", None)
+                    if thinking:
+                        thought_parts.append(thinking)
+                        await self._send(
+                            session_id,
+                            update_agent_thought(TextContentBlock(text=thinking, type="text", field_meta=None)),
+                        )
+
+                    if chunk.message.content:
+                        content_parts.extend(chunk.message.content)
+
+                    if chunk.message.tool_calls:
+                        tool_calls.extend(chunk.message.tool_calls)
+
+                    if getattr(chunk, "prompt_eval_count", None):
+                        prompt_eval_count = chunk.prompt_eval_count
+                    if getattr(chunk, "eval_count", None):
+                        eval_count = chunk.eval_count
+
+                full_content = "".join(content_parts)
+                assistant_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": full_content,
+                }
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                #if thought_parts:
+                    #assistant_msg["thinking"] = "".join(thought_parts)
+                messages.append(assistant_msg)
+
+                await self._send(
+                    session_id,
+                    UsageUpdate(
+                        used=((prompt_eval_count or 0) + (eval_count or 0)),
+                        size=MAX_CONTEXT_SIZE,
+                        cost=Cost(amount=0, currency="euros", _meta=None),
+                        field_meta=None,
+                        session_update="usage_update",
+                    ),
                 )
-                msg = response.message
-                messages.append(msg.model_dump(exclude_none=True))
 
-                await self._send(session_id, update=UsageUpdate(used=((response.eval_count or 0) + (response.prompt_eval_count or 0)), size=MAX_CONTEXT_SIZE, cost=Cost(amount=0, currency="euros", _meta=None), field_meta=None, session_update="usage_update"))
-
-                calls = msg.tool_calls or []
-                if not calls:
-                    await self._send(session_id, update_agent_message_text(msg.content or ""))
+                if not tool_calls:
+                    await self._send(
+                        session_id, update_agent_message_text(full_content)
+                    )
                     break
 
-                for call in calls:
+                for call in tool_calls:
                     tool_name = call.function.name
                     arguments = call.function.arguments
 
                     try:
-                        await self._send(session_id, update= start_tool_call(
-                            tool_name,
-                            f"Running {tool_name}",
-                            kind="execute",
-                            status="in_progress",
-                            raw_input=arguments,)
+                        await self._send(
+                            session_id,
+                            update=start_tool_call(
+                                tool_name,
+                                f"Running {tool_name}",
+                                kind="execute",
+                                status="in_progress",
+                                raw_input=arguments,
+                            ),
                         )
-                        result = await  self._call_tool(session_id, call.function.name, dict(call.function.arguments))
+                        result = await self._call_tool(
+                            session_id, tool_name, dict(arguments)
+                        )
                         logging.info(result)
-                        messages.append({"role": "tool", "tool_name": call.function.name, "content": result})
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_name": tool_name,
+                                "content": result,
+                            }
+                        )
                         await self._send(
                             session_id,
                             update=update_tool_call(
                                 tool_name,
                                 title=f"Tool {tool_name} completed successfully",
                                 status="completed",
-                                raw_output=result),
+                                raw_output=result,
+                            ),
                         )
                     except Exception as exc:
                         await self._send(
@@ -298,12 +354,17 @@ class NoesisAgent(Agent):
                             ),
                         )
                         raise
+
             else:
-                await self._conn.session_update(session_id, update_user_message_text("tools calling ended"))
+                await self._conn.session_update(
+                    session_id, update_user_message_text("tools calling ended")
+                )
 
         except Exception as exc:
             logging.info(exc)
-            await self._conn.session_update(session_id, update_user_message_text(str(exc)))
+            await self._conn.session_update(
+                session_id, update_user_message_text(str(exc))
+            )
 
         return PromptResponse(stop_reason="end_turn", usage=None, field_meta=None)
 
