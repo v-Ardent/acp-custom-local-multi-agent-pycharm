@@ -1,6 +1,0 @@
-# Dépendances du labo "Architecture agentique & orchestrateurs d'agents IA"
-openai>=1.40        # client compatible OpenAI (Groq, Ollama...)
-python-dotenv>=1.0  # lecture du fichier .env
-rich>=13.0          # affichage coloré des traces dans le terminal
-requests>=2.31      # appels HTTP (API météo Open-Meteo)
-streamlit>=1.35     # interface web du template de projet
