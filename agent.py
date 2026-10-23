@@ -27,7 +27,7 @@ from acp.schema import (
     Implementation,
     McpServerStdio,
     SseMcpServer,
-    UserMessageChunk, AgentCapabilities, PromptCapabilities, McpCapabilities, SessionCapabilities,
+    AgentCapabilities, PromptCapabilities, McpCapabilities, SessionCapabilities,
     AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities,
 )
 
@@ -73,7 +73,6 @@ class NoesisAgent(Agent):
         try:
             cfg = self._mcp_cfg
             url = cfg.url if cfg else MCP_URL
-            headers = {h.name: h.value for h in (cfg.headers if cfg else [])}
             async with streamable_http_client(url) as streams:
                 async with ClientSession(streams[0], streams[1]) as mcp:
                     await mcp.initialize()
@@ -88,8 +87,10 @@ class NoesisAgent(Agent):
             self._mcp = None
             self._mcp_ready.set()
 
+
     def _active_tools(self, session_id: str) -> list[dict]:
         return self._ollama_tools + list(self._discovered.get(session_id, {}).values())
+
 
     async def _get_mcp(self) -> ClientSession:
         if self._mcp_task is None:
@@ -98,6 +99,7 @@ class NoesisAgent(Agent):
         if self._mcp is None:
             raise RuntimeError(f"MCP unavailable: {self._mcp_error}")
         return self._mcp
+
 
     async def close(self) -> None:
         self._mcp_stop.set()

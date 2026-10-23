@@ -8,7 +8,7 @@ import json
 
 TOOLS = "tools"
 CHAT_HISTORY = "chat_history"
-MCP_URL = "http://127.0.0.1:64462/stream"
+MCP_URL = "http://127.0.0.1:64485/stream"
 
 class rag:
     def __init__(self):
