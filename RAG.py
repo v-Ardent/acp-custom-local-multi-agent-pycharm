@@ -28,7 +28,7 @@ class rag:
         return f"updated {id}"
 
 
-    def search_memory(self, query: str, collection:str, contains: str | None = None, n_results: int = 1):
+    def search_memory(self, query: str, collection:str, n_results: int = 5, contains: str | None = None):
         """Semantic search. Returns a flat, JSON-safe list of hits."""
         if collection not in (TOOLS, CHAT_HISTORY):
             raise ValueError(f"Unknown collection '{collection}'")
