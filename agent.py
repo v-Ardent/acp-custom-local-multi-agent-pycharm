@@ -66,11 +66,15 @@ class NoesisAgent(Agent):
         self._rag = rag()
         self._discovered: dict[str, dict[str, dict]] = {}
         self._history: dict[str, list[dict]] = {}
+        self._mcp_cfg: HttpMcpServer | None = None
 
 
     async def _run_mcp(self) -> None:
         try:
-            async with streamable_http_client(MCP_URL) as streams:
+            cfg = self._mcp_cfg
+            url = cfg.url if cfg else MCP_URL
+            headers = {h.name: h.value for h in (cfg.headers if cfg else [])}
+            async with streamable_http_client(url) as streams:
                 async with ClientSession(streams[0], streams[1]) as mcp:
                     await mcp.initialize()
                     self._ollama_tools = list(CORE_TOOLS)
@@ -84,8 +88,8 @@ class NoesisAgent(Agent):
             self._mcp = None
             self._mcp_ready.set()
 
-    def _active_tools(self) -> list[dict]:
-        return self._ollama_tools + list(self._discovered.values())
+    def _active_tools(self, session_id: str) -> list[dict]:
+        return self._ollama_tools + list(self._discovered.get(session_id, {}).values())
 
     async def _get_mcp(self) -> ClientSession:
         if self._mcp_task is None:
@@ -103,11 +107,6 @@ class NoesisAgent(Agent):
 
     def on_connect(self, conn: Client) -> None:
         self._conn = conn
-
-
-    async def _send_agent_message(self, session_id: str, content: Any) -> None:
-        update = content if isinstance(content, UserMessageChunk) else UserMessageChunk(content=content, _meta=None, messageId=None, sessionUpdate="user_message_chunk")
-        await self._conn.session_update(session_id, update)
 
 
     async def initialize(self, protocol_version: int, client_capabilities: ClientCapabilities | None = None, client_info: Implementation | None = None, **kwargs: Any) -> InitializeResponse:
@@ -161,6 +160,12 @@ class NoesisAgent(Agent):
         session_id = str(self._next_session_id)
         self._next_session_id += 1
         self._sessions.add(session_id)
+
+        for s in mcp_servers or []:
+            if isinstance(s, HttpMcpServer):
+                self._mcp_cfg = s
+                break
+
         return NewSessionResponse(sessionId=session_id, configOptions=None, _meta=None)
 
 
@@ -238,7 +243,7 @@ class NoesisAgent(Agent):
                 response = await self._llm.chat(
                     model=OLLAMA_MODEL,
                     messages=messages,
-                    tools=self._active_tools(),
+                    tools=self._active_tools(session_id),
                     think=True,
                     options={"num_ctx": 16384},
                 )
@@ -253,6 +258,7 @@ class NoesisAgent(Agent):
                     break
 
                 for call in calls:
+                    #await self._conn.session_update(session_id, sessionUpdate="tool_call")
                     result = await  self._call_tool(session_id, call.function.name, dict(call.function.arguments))
                     messages.append({"role": "tool", "tool_name": call.function.name, "content": result})
             else:
