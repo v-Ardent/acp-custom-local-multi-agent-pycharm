@@ -19,6 +19,9 @@ from acp import (
     PromptResponse,
     SetSessionModeResponse,
     run_agent,
+    start_tool_call,
+    update_tool_call,
+    update_agent_message_text
 )
 from acp.interfaces import Client
 from acp.schema import (
@@ -28,7 +31,7 @@ from acp.schema import (
     McpServerStdio,
     SseMcpServer,
     AgentCapabilities, PromptCapabilities, McpCapabilities, SessionCapabilities,
-    AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities,
+    AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities
 )
 
 RACINE = Path(__file__).resolve().parent.parent
@@ -254,15 +257,42 @@ class NoesisAgent(Agent):
 
                 calls = msg.tool_calls or []
                 if not calls:
-                    await self._conn.session_update(
-                        session_id, update_user_message_text(msg.content or "")
-                    )
+                    await self._send(session_id, update_agent_message_text(msg.content or ""))
                     break
 
                 for call in calls:
-                    #await self._conn.session_update(session_id, sessionUpdate="tool_call")
-                    result = await  self._call_tool(session_id, call.function.name, dict(call.function.arguments))
-                    messages.append({"role": "tool", "tool_name": call.function.name, "content": result})
+                    tool_name = call.function.name
+                    arguments = call.function.arguments
+
+                    try:
+                        await self._send(session_id, update= start_tool_call(
+                            tool_name,
+                            f"Running {tool_name}",
+                            kind="execute",
+                            status="in_progress",
+                            raw_input=arguments,)
+                        )
+                        result = await  self._call_tool(session_id, call.function.name, dict(call.function.arguments))
+                        logging.info(result)
+                        messages.append({"role": "tool", "tool_name": call.function.name, "content": result})
+                        await self._send(
+                            session_id,
+                            update=update_tool_call(
+                                tool_name,
+                                title=f"Tool {tool_name} completed successfully",
+                                status="completed",
+                                raw_output=result),
+                        )
+                    except Exception as exc:
+                        await self._send(
+                            session_id,
+                            update=update_tool_call(
+                                tool_name,
+                                status="failed",
+                                raw_output=str(exc),
+                            ),
+                        )
+                        raise
             else:
                 await self._conn.session_update(session_id, update_user_message_text("tools calling ended"))
 
@@ -285,6 +315,9 @@ class NoesisAgent(Agent):
     async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
         logging.info("Received extension notification: %s", method)
 
+
+    async def _send(self, session_id: str, update: Any) -> None:
+        await self._conn.session_update(session_id, update)
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
