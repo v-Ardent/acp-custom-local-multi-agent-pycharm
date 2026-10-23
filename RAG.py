@@ -1,6 +1,5 @@
 import asyncio
-import logging
-
+from typing import cast
 import chromadb
 from chromadb import WhereDocument
 from mcp.client.streamable_http import streamable_http_client
@@ -9,6 +8,7 @@ import json
 
 TOOLS = "tools"
 CHAT_HISTORY = "chat_history"
+MCP_URL = "http://127.0.0.1:64462/stream"
 
 class rag:
     def __init__(self):
@@ -42,69 +42,54 @@ class rag:
         if contains:
             where_document = {"$contains": contains}
 
-        return col.query(
+        res = col.query(
             query_texts=[query],
             n_results=n_results,
             where_document=where_document
         )
 
-async def add_mcp_tools_to_collection(collection):
-    MCP_URL = "http://127.0.0.1:64462/stream"
+        hits = []
+        for i, doc_id in enumerate(res["ids"][0]):
+            hit = {
+                "id": doc_id,
+                "text": res["documents"][0][i],
+                "distance": res["distances"][0][i],
+            }
+            if collection == TOOLS:
+                hit["input_schema"] = json.loads(cast(str, res["metadatas"][0][i]["input_schema"]))
+            hits.append(hit)
+        return hits
+
+
+async def add_mcp_tools_to_collection(store: rag) -> None:
     async with streamable_http_client(MCP_URL) as streams:
         async with ClientSession(streams[0], streams[1]) as mcp:
             await mcp.initialize()
+            tools = (await mcp.list_tools()).tools
 
-            tool_result = await mcp.list_tools()
-            """print("tool_result:")
-            print(json.dumps(
-                tool_result.model_dump(mode="json"),
-                indent=2,
-                ensure_ascii=False
-            ))"""
+    try:
+        store.client.delete_collection(TOOLS)
+    except Exception:
+        pass
+    collection = store.client.create_collection(TOOLS)
 
+    collection.add(
+        ids=[t.name for t in tools],
+        documents=[f"{t.name}: {t.description or ''}".strip() for t in tools],
+        metadatas=[
+            {
+                "title": getattr(t, "title", None) or "",
+                "description": t.description or t.name,
+                "input_schema": json.dumps(
+                    t.input_schema or {"type": "object", "properties": {}},
+                    ensure_ascii=False,
+                ),
+            }
+            for t in tools
+        ],
+    )
+    print(f"Indexed {len(tools)} tools: {[t.name for t in tools]}")
 
-            for tool in tool_result.tools:
-                collection.add(
-                    ids=[tool.name],
-                    documents=[
-                        f"Tool name: {tool.name}\n"
-                        f"Description: {tool.description or ''}"
-                    ],
-                    metadatas=[{
-                        "title": getattr(tool, "title", None) or "",
-                        "input_schema": json.dumps(
-                            getattr(tool, "inputSchema", {}),
-                            ensure_ascii=False
-                        ),
-                        "execution": json.dumps(
-                            getattr(tool, "execution", None),
-                            ensure_ascii=False,
-                            default=str
-                        ),
-                        "output_schema": json.dumps(
-                            getattr(tool, "outputSchema", None),
-                            ensure_ascii=False,
-                            default=str
-                        ),
-                        "icons": json.dumps(
-                            getattr(tool, "icons", None),
-                            ensure_ascii=False,
-                            default=str
-                        ),
-                        "annotations": json.dumps(
-                            getattr(tool, "annotations", None),
-                            ensure_ascii=False,
-                            default=str
-                        ),
-                        "meta": json.dumps(
-                            getattr(tool, "meta", None),
-                            ensure_ascii=False,
-                            default=str
-                        ),
-                    }]
-                )
 
 if __name__ == "__main__":
-    rag = rag()
-    collection = rag.client.get_or_create_collection(TOOLS)
-    asyncio.run(add_mcp_tools_to_collection(collection))
+    asyncio.run(add_mcp_tools_to_collection(rag()))
