@@ -1,6 +1,7 @@
 import asyncio
 from typing import cast
 import chromadb
+from acp.schema import HttpMcpServer
 from chromadb import WhereDocument
 from mcp.client.streamable_http import streamable_http_client
 from mcp import ClientSession
@@ -8,7 +9,9 @@ import json
 
 TOOLS = "tools"
 CHAT_HISTORY = "chat_history"
-MCP_URL = "http://127.0.0.1:64485/stream"
+_mcp_cfg: HttpMcpServer | None = None
+pychram_MCP_URL = _mcp_cfg.url if _mcp_cfg and _mcp_cfg.name == "pycharm_MCP" else "http://127.0.0.1:64462/stream"
+
 
 class rag:
     def __init__(self):
@@ -28,7 +31,7 @@ class rag:
         return f"updated {id}"
 
 
-    def search_memory(self, query: str, collection:str, n_results: int = 5, contains: str | None = None):
+    def search_memory(self, query: str, collection:str, n_results: int = 10, contains: str | None = None):
         """Semantic search. Returns a flat, JSON-safe list of hits."""
         if collection not in (TOOLS, CHAT_HISTORY):
             raise ValueError(f"Unknown collection '{collection}'")
@@ -62,7 +65,7 @@ class rag:
 
 
 async def add_mcp_tools_to_collection(store: rag) -> None:
-    async with streamable_http_client(MCP_URL) as streams:
+    async with streamable_http_client(pychram_MCP_URL) as streams:
         async with ClientSession(streams[0], streams[1]) as mcp:
             await mcp.initialize()
             tools = (await mcp.list_tools()).tools

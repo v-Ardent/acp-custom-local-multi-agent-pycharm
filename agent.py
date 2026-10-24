@@ -37,7 +37,7 @@ from acp.schema import (
 RACINE = Path(__file__).resolve().parent.parent
 load_dotenv(RACINE / ".env")
 
-MCP_URL = "http://127.0.0.1:64462/stream"
+pycharm_MCP_URL = "http://127.0.0.1:64462/stream"
 OLLAMA_MODEL = "gemma4:e4b"
 
 MAX_ACTIVE_DISCOVERED = 6
@@ -78,7 +78,8 @@ class NoesisAgent(Agent):
     async def _run_mcp(self) -> None:
         try:
             cfg = self._mcp_cfg
-            url = cfg.url if cfg else MCP_URL
+            url = cfg.url if cfg and cfg.name == "pycharm_MCP" else pycharm_MCP_URL
+            logging.info(f"MCP URL: {url}")
             async with streamable_http_client(url) as streams:
                 async with ClientSession(streams[0], streams[1]) as mcp:
                     await mcp.initialize()
