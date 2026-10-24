@@ -22,7 +22,7 @@ CORE_TOOLS: list[dict] = [
                     },
                     "n_results": {
                         "type": "integer",
-                        "description": "Number of items to retrieve (default 5). Increase this if the user asks for a specific count of items or tools (e.g., if asked for 6 tools, set n_results=6)."
+                        "description": "Number of items to retrieve (default 10). Increase this if the user asks for a specific count of items or tools (e.g., if asked for 6 tools, set n_results=6)."
                     },
                     "contains": {
                         "type": "string",
