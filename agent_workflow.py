@@ -220,7 +220,7 @@ async def run_workflow(
         return "Rejected"
 
     def route_orchestrator(state: State):
-        return "coder" if state.plan is not None else END
+        return "coder" if state.plan is not None else "no_plan_needed"
 
     # Build and compile graph
     builder = StateGraph(State)
@@ -230,7 +230,7 @@ async def run_workflow(
     builder.add_node("synthesizer", synthesizer)
 
     builder.add_edge(START, "orchestrator")
-    builder.add_conditional_edges("orchestrator", route_orchestrator, {"coder": "coder", END: END})
+    builder.add_conditional_edges("orchestrator", route_orchestrator, {"coder": "coder", "no_plan_needed": END})
     builder.add_edge("coder", "validator")
     builder.add_conditional_edges(
         "validator", route_validation,
