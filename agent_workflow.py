@@ -58,28 +58,32 @@ async def tool_call(
     tool_call_rag,
     send_to_acp,
     output_schema: type[BaseModel] | None = None,
+    require_schema: bool = False
 ):
     """Tool loop. If output_schema is given, the model submits its final answer by
     calling a tool named after the schema, so no extra structured-output call is needed."""
-    final_name = output_schema.__name__ if output_schema else None
+    schema_tool = output_schema.__name__ if output_schema else None
 
     for _ in range(max_tool_iterations):
         bound = tools(session_id) + ([output_schema] if output_schema else [])
         response = await base_llm.bind_tools(bound).ainvoke(messages)
 
         if not response.tool_calls:
-            if output_schema:
-                return await base_llm.with_structured_output(output_schema).ainvoke(messages)
+            if output_schema and require_schema:
+                messages.append(response)
+                messages.append(
+                    HumanMessage(content=f"Submit your answer by calling the {schema_tool} tool, not as plain text."))
+                continue
             return response
 
-        final = next((c for c in response.tool_calls if c["name"] == final_name), None)
+        final = next((c for c in response.tool_calls if c["name"] == schema_tool), None)
         if final:
             try:
                 return output_schema(**final["args"])
             except ValidationError as exc:
                 messages.append(response)
                 for c in response.tool_calls:
-                    messages.append(ToolMessage(content=f"Invalid {final_name}: {exc}. Call {final_name} again with valid fields.", tool_call_id=c["id"]))
+                    messages.append(ToolMessage(content=f"Invalid {schema_tool}: {exc}. Call {schema_tool} again with valid fields.", tool_call_id=c["id"]))
                 continue
 
         messages.append(response)
@@ -95,8 +99,7 @@ async def tool_call(
             messages.append(ToolMessage(content=str(tool_result), tool_call_id=call_id))
 
     await send_to_acp(session_id, SessionNotification(sessionId=session_id, update=SessionInfoUpdate(title="max iteration exceeded", _meta=None,sessionUpdate="session_info_update", updatedAt=None),_meta=None))
-    if output_schema:
-        return await base_llm.with_structured_output(output_schema).ainvoke(messages)
+    messages.append(HumanMessage(content="Answer now with the information you have."))
     return await base_llm.ainvoke(messages)
 
 
@@ -116,9 +119,12 @@ async def run_workflow(
                 content="You are an expert AI orchestrator and technical project manager. "
                 "Your job is to analyze the user's request, break it down into a clear, logical, "
                 "and structured execution plan, and provide explicit, actionable instructions "
-                "for both the Coder and Validator agents."
+                "for both the Coder and Validator agents. "
                 "When you have everything you need, submit your final answer by calling the "
-                "Plan tool. Do not write the answer as plain text."
+                "Plan tool. Do not write the answer as plain text. "
+                "If the request is a question, a conversation, or something you can answer directly "
+                "(optionally after using your tools), answer in plain text and do not call Plan. "
+                "Call Plan only when the task requires writing or modifying code that needs implementation and validation."
             ),
             HumanMessage(content=state.user_prompt),
         ]
@@ -126,9 +132,14 @@ async def run_workflow(
             last = state.completed_task[-1]
             messages.append(HumanMessage(content=f"Previous validation feedback: {last['output']}"))
 
-        result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag,send_to_acp, output_schema=Plan)
+        result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag, send_to_acp,
+                                 output_schema=Plan, require_schema=False)
 
-        return {"plan": result, "iterations": state.iterations + 1}
+        if isinstance(result, Plan):
+            return {"plan": result, "iterations": state.iterations + 1}
+
+        text = result.content if isinstance(result.content, str) else str(result.content)
+        return {"plan": None, "response": [text], "iterations": state.iterations + 1}
 
 
     async def coder(state: State):
@@ -145,7 +156,7 @@ async def run_workflow(
             HumanMessage(content=f"Instructions: {state.plan.coder_instructions}"),
         ]
 
-        result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag, send_to_acp)
+        result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag, send_to_acp, require_schema=False)
         return {"completed_task": [{"agent": "coder", "output": result.content}]}
 
 
@@ -169,7 +180,7 @@ async def run_workflow(
             )),
         ]
 
-        verdict = await tool_call(3, llm, tools, messages, session_id, tool_call_rag, send_to_acp, output_schema=Verdict)
+        verdict = await tool_call(3, llm, tools, messages, session_id, tool_call_rag, send_to_acp, output_schema=Verdict, require_schema=True)
 
         return {
             "is_validated": verdict.is_validated if isinstance(verdict, Verdict) else False,
@@ -208,6 +219,9 @@ async def run_workflow(
             return END
         return "Rejected"
 
+    def route_orchestrator(state: State):
+        return "coder" if state.plan is not None else END
+
     # Build and compile graph
     builder = StateGraph(State)
     builder.add_node("orchestrator", orchestrator)
@@ -216,7 +230,7 @@ async def run_workflow(
     builder.add_node("synthesizer", synthesizer)
 
     builder.add_edge(START, "orchestrator")
-    builder.add_edge("orchestrator", "coder")
+    builder.add_conditional_edges("orchestrator", route_orchestrator, {"coder": "coder", END: END})
     builder.add_edge("coder", "validator")
     builder.add_conditional_edges(
         "validator", route_validation,
@@ -239,7 +253,8 @@ async def run_workflow(
                 session_id,
                 update_agent_thought(TextContentBlock(text=reasoning, type="text", field_meta=None)),
             )
-        if chunk.content:
+
+        if current_node not in ("coder", "validator") and isinstance(chunk.content, str) and chunk.content:
             await send_to_acp(
                 session_id, update_agent_message_text(chunk.content)
             )
