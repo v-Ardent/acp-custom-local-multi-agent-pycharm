@@ -1,16 +1,14 @@
 import asyncio
 from typing import cast
 import chromadb
-from acp.schema import HttpMcpServer
 from chromadb import WhereDocument
 from mcp.client.streamable_http import streamable_http_client
 from mcp import ClientSession
 import json
+from config import pycharm_MCP_URL
 
 TOOLS = "tools"
 CHAT_HISTORY = "chat_history"
-_mcp_cfg: HttpMcpServer | None = None
-pychram_MCP_URL = _mcp_cfg.url if _mcp_cfg and _mcp_cfg.name == "pycharm_MCP" else "[URL]"
 
 
 class rag:
@@ -21,7 +19,7 @@ class rag:
     def add_to_collection(self, document: str, id: str,metadata: dict[str, str | int | float | bool] | None = None) -> str:
         """Store a new memory. Chroma metadata must be flat scalars and non-empty."""
         col = self.client.get_or_create_collection(CHAT_HISTORY)
-        col.add(ids=[id], documents=[document], metadatas=[metadata] if metadata else None)
+        col.upsert(ids=[id], documents=[document], metadatas=[metadata] if metadata else None)
         return f"stored {id}"
 
 
@@ -47,7 +45,7 @@ class rag:
 
         res = col.query(
             query_texts=[query],
-            n_results=n_results,
+            n_results=min(n_results, col.count()),
             where_document=where_document
         )
 
@@ -65,7 +63,7 @@ class rag:
 
 
 async def add_mcp_tools_to_collection(store: rag) -> None:
-    async with streamable_http_client(pychram_MCP_URL) as streams:
+    async with streamable_http_client(pycharm_MCP_URL) as streams:
         async with ClientSession(streams[0], streams[1]) as mcp:
             await mcp.initialize()
             tools = (await mcp.list_tools()).tools
