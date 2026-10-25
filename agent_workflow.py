@@ -35,17 +35,19 @@ SYSTEM_PROMPT_SYNTHESIZER = (
 )
 
 USER_PROMPT = (
-    "Hi, what can you do ?"
+    "just say this word 'Bonjour'"
 )
 LLM = "gemma4:e4b"
 MAX_ITERATIONS = 3
+MAX_CONTEXT_SIZE = 131072
 
 llm = ChatOllama(
     model=LLM,
     reasoning=True,
     temperature=1,
-    num_predict=16000
+    num_ctx = MAX_CONTEXT_SIZE,
 )
+
 
 class Verdict(BaseModel):
     is_validated: bool = Field(description="True only if all acceptance criteria are met.")
@@ -82,7 +84,7 @@ class State(BaseModel):
     iterations: int = 0
 
 
-def orchestrator(state: State):
+async def orchestrator(state: State):
     """Orchestrator that generates a plan"""
     messages = [
         SystemMessage(content=SYSTEM_PROMPT_ORCHESTRATOR),
@@ -91,53 +93,52 @@ def orchestrator(state: State):
     if state.completed_task:
         last = state.completed_task[-1]
         messages.append(HumanMessage(content=f"Previous validation feedback: {last['output']}"))
-    plan = planner.invoke(messages)
+    plan = await planner.ainvoke(messages)
     return {"plan": plan, "iterations": state.iterations + 1}
 
 
-def coder(state: State):
+async def coder(state: State):
     """Worker writes code based on orchestrator instructions"""
     if state.plan is None:
         raise ValueError("The orchestrator must generate a plan before coding.")
 
-    task = llm.invoke(
-        [
-            SystemMessage(
-                content=SYSTEM_PROMPT_CODER
-            ),
-            HumanMessage(
-                content=f"Instructions: {state.plan.coder_instructions}"
-            ),
-        ]
-    )
-    return {"completed_task": [{"agent": "coder", "output": task.content}]}
+    task = [
+        SystemMessage(content=SYSTEM_PROMPT_CODER),
+        HumanMessage(content=f"Instructions: {state.plan.coder_instructions}"),
+    ]
+    task = await llm.ainvoke(task)
+
+    return {"completed_task": [{"agent": "coder", "output": task}]}
 
 
-def validator(state: State):
-    """Worker validates the implemented code"""
+async def validator(state: State):
+    """Worker validates the implemented code (async + token streaming)."""
     if state.plan is None:
         raise ValueError("The orchestrator must generate a plan before validation.")
 
     code = state.completed_task[-1]["output"]
-    verdict = judge.invoke([
+    messages = [
         SystemMessage(content=SYSTEM_PROMPT_VALIDATOR),
         HumanMessage(content=(
             f"Instructions: {state.plan.validator_instructions}\n\n"
             f"Acceptance criteria: {state.plan.acceptance_criteria}\n\n"
             f"Code to review:\n{code}"
         )),
-    ])
+    ]
+
+    verdict = await judge.ainvoke(messages)
+
     return {
         "is_validated": verdict.is_validated if isinstance(verdict, Verdict) else None,
         "completed_task": [{"agent": "validator", "output": verdict.feedback if isinstance(verdict, Verdict) else None}],
     }
 
 
-def synthesizer(state: State):
-    """Synthesizer that crafts the final user-facing response."""
+async def synthesizer(state: State):
+    """Synthesizer that crafts the final user-facing response (async + streaming)."""
     latest_code = next(
         (t["output"] for t in reversed(state.completed_task) if t["agent"] == "coder"),
-        "No code available."
+        "No code available.",
     )
 
     messages = [
@@ -149,47 +150,59 @@ def synthesizer(state: State):
             )
         ),
     ]
-    response = llm.invoke(messages)
 
-    return {"response": [response.content]}
+    response = await llm.ainvoke(messages)
+
+    return {"response": [response]}
 
 
 def route_validation(state: State):
-    if state.is_validated or state.iterations >= MAX_ITERATIONS:
+    if state.is_validated:
         return "Accepted"
+    elif state.iterations >= MAX_ITERATIONS:
+        return END
     return "Rejected"
 
 
-builder = StateGraph(State)
+async def main():
+    builder = StateGraph(State)
+    builder.add_node("orchestrator", orchestrator)
+    builder.add_node("coder", coder)
+    builder.add_node("validator", validator)
+    builder.add_node("synthesizer", synthesizer)
 
-builder.add_node("orchestrator", orchestrator)
-builder.add_node("coder", coder)
-builder.add_node("validator", validator)
-builder.add_node("synthesizer", synthesizer)
+    builder.add_edge(START, "orchestrator")
+    builder.add_edge("orchestrator", "coder")
+    builder.add_edge("coder", "validator")
+    builder.add_conditional_edges(
+        "validator", route_validation,
+        {"Accepted": "synthesizer", "Rejected": "orchestrator"},
+    )
+    builder.add_edge("synthesizer", END)
+    graph = builder.compile()
 
-builder.add_edge(START, "orchestrator")
-builder.add_edge("orchestrator", "coder")
-builder.add_edge("coder", "validator")
-builder.add_conditional_edges(
-    "validator", route_validation, {"Accepted": "synthesizer", "Rejected": "orchestrator"}
-)
-builder.add_edge("synthesizer", END)
+    current_node = None
+    one_time = True
+    async for message_chunk, metadata in graph.astream({"user_prompt": USER_PROMPT}, stream_mode="messages"):
+        node = metadata.get("langgraph_node")
 
-orchestrator_worker = builder.compile()
+        if one_time:
+            print(f"{message_chunk}", flush=True)
+            one_time = False
 
-"""png = orchestrator_worker.get_graph().draw_mermaid_png()
-with open("graph.png", "wb") as f:
-    f.write(png)
-"""
-result = orchestrator_worker.invoke({"user_prompt": USER_PROMPT})
+        if node != current_node:
+            current_node = node
+            print(f"\n\n=== {node.upper()} ===\n", flush=True)
+            print(f"\n\n=== Thinking ===\n", flush=True)
 
-print("prompt:\n", result["user_prompt"])
-print("PLAN:\n", result["plan"].model_dump_json(indent=2))
+        reasoning = message_chunk.additional_kwargs.get("reasoning_content")
+        if reasoning:
+            print(reasoning, end="", flush=True)
 
-for t in result["completed_task"]:
-    print(f"\n=== {t['agent'].upper()} ===\n{t['output']}")
+        if message_chunk.content:
+            print(message_chunk.content, end="", flush=True)
 
-print("\nRESPONSES:")
 
-for r in result["response"]:
-    print("\n---\n", r)
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
