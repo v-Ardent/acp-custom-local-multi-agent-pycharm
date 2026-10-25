@@ -3,7 +3,7 @@ import operator
 from acp import update_agent_thought, update_agent_message_text, start_tool_call, update_tool_call
 from acp.schema import TextContentBlock, UsageUpdate, Cost, SessionNotification, SessionInfoUpdate
 from langchain_core.messages import ToolMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from langgraph.graph import StateGraph, START, END
 from langchain.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
@@ -17,11 +17,14 @@ llm = ChatOllama(
 )
 
 class Verdict(BaseModel):
+    """Submit the final review verdict once the code has been reviewed and tested."""
     is_validated: bool = Field(description="True only if all acceptance criteria are met.")
     feedback: str = Field(description="Review findings, test results, and required fixes.")
 
 
 class Plan(BaseModel):
+    """Submit the final execution plan. Call this once you have gathered all the
+    information you need. Do not write the plan as plain text."""
     objective: str = Field(
         description="The overall goal derived from the user's prompt."
     )
@@ -48,85 +51,53 @@ class State(BaseModel):
 
 async def tool_call(
     max_tool_iterations: int,
-    llm_with_tools,
+    base_llm,
+    tools: Callable[[str], list[dict[Any, Any]]],
     messages: list,
     session_id: str,
-    tool_call_rag: Callable[[str, str, dict[str, Any]], Coroutine[Any, Any, str]],
-    worker_llm,
-    send_to_acp: Callable[[str, Any], Coroutine[Any, Any, None]]
+    tool_call_rag,
+    send_to_acp,
+    output_schema: type[BaseModel] | None = None,
 ):
-    """Generic helper to handle multi-turn tool calling loops with RAG execution."""
-    response = None
-    tools_were_called = False
+    """Tool loop. If output_schema is given, the model submits its final answer by
+    calling a tool named after the schema, so no extra structured-output call is needed."""
+    final_name = output_schema.__name__ if output_schema else None
 
     for _ in range(max_tool_iterations):
-        response = await llm_with_tools.ainvoke(messages)
+        bound = tools(session_id) + ([output_schema] if output_schema else [])
+        response = await base_llm.bind_tools(bound).ainvoke(messages)
 
         if not response.tool_calls:
-            break
+            if output_schema:
+                return await base_llm.with_structured_output(output_schema).ainvoke(messages)
+            return response
 
-        tools_were_called = True
+        final = next((c for c in response.tool_calls if c["name"] == final_name), None)
+        if final:
+            try:
+                return output_schema(**final["args"])
+            except ValidationError as exc:
+                messages.append(response)
+                for c in response.tool_calls:
+                    messages.append(ToolMessage(content=f"Invalid {final_name}: {exc}. Call {final_name} again with valid fields.", tool_call_id=c["id"]))
+                continue
+
         messages.append(response)
-
         for call in response.tool_calls:
             tool_name, arguments, call_id = call["name"], call["args"], call["id"]
-
             try:
-                await send_to_acp(
-                    session_id,
-                    start_tool_call(
-                        call_id,
-                        f"Running {tool_name}",
-                        kind="execute",
-                        status="in_progress",
-                        raw_input=arguments,
-                    ),
-                )
+                await send_to_acp(session_id, start_tool_call(call_id, f"Running {tool_name}", kind="execute", status="in_progress", raw_input=arguments))
                 tool_result = await tool_call_rag(session_id, tool_name, arguments)
-                await send_to_acp(
-                    session_id,
-                    update_tool_call(
-                        call_id,
-                        title=f"Tool {tool_name} completed successfully",
-                        status="completed",
-                        raw_output=tool_result,
-                    ),
-                )
+                await send_to_acp(session_id, update_tool_call(call_id, title=f"Tool {tool_name} completed successfully", status="completed", raw_output=tool_result))
             except Exception as exc:
-                tool_result = f"Error executing tool {tool_name}: {str(exc)}"
-                await send_to_acp(
-                    session_id,
-                    update_tool_call(
-                        call_id,
-                        title=f"Tool {tool_name} failed",
-                        status="failed",
-                        raw_output=str(exc),
-                    ),
-                )
-            messages.append(
-                ToolMessage(
-                    content=str(tool_result),
-                    tool_call_id=call_id
-                )
-            )
-    else:
-        await send_to_acp(
-            session_id,
-            SessionNotification(
-                sessionId=session_id,
-                update=SessionInfoUpdate(title="max iteration exceeded", _meta=None, sessionUpdate="session_info_update", updatedAt=None),
-                _meta=None
-            ),
-        )
+                tool_result = f"Error executing tool {tool_name}: {exc}"
+                await send_to_acp(session_id, update_tool_call(call_id, title=f"Tool {tool_name} failed", status="failed", raw_output=str(exc)))
+            messages.append(ToolMessage(content=str(tool_result), tool_call_id=call_id))
 
-    if tools_were_called:
-        if worker_llm:
-            return await worker_llm.ainvoke(messages)
-        return await llm_with_tools.ainvoke(messages)
-
-    if worker_llm:
-        return await worker_llm.ainvoke(messages)
-    return response
+    await send_to_acp(session_id, SessionNotification(sessionId=session_id, update=SessionInfoUpdate(title="max iteration exceeded", _meta=None,sessionUpdate="session_info_update", updatedAt=None),_meta=None))
+    if output_schema:
+        return await base_llm.with_structured_output(output_schema).ainvoke(messages)
+    return await base_llm.ainvoke(messages)
 
 
 async def run_workflow(
@@ -136,14 +107,7 @@ async def run_workflow(
     tool_call_rag: Callable[[str, str, dict[str, Any]], Coroutine[Any, Any, str]],
     tools: Callable[[str], list[dict[Any, Any]]]
 ):
-    tools = tools(session_id)
-    planner = llm.with_structured_output(Plan)
-    orchestrator_llm = llm.bind_tools(tools)
-
-    coder_llm = llm.bind_tools(tools)
-
-    judge = llm.with_structured_output(Verdict)
-    validator_llm = llm.bind_tools(tools)
+    synthesizer_llm = llm.bind(think=False)
 
     async def orchestrator(state: State):
         """Orchestrator that generates a structured plan."""
@@ -153,6 +117,8 @@ async def run_workflow(
                 "Your job is to analyze the user's request, break it down into a clear, logical, "
                 "and structured execution plan, and provide explicit, actionable instructions "
                 "for both the Coder and Validator agents."
+                "When you have everything you need, submit your final answer by calling the "
+                "Plan tool. Do not write the answer as plain text."
             ),
             HumanMessage(content=state.user_prompt),
         ]
@@ -160,15 +126,7 @@ async def run_workflow(
             last = state.completed_task[-1]
             messages.append(HumanMessage(content=f"Previous validation feedback: {last['output']}"))
 
-        result = await tool_call(
-            max_tool_iterations=5,
-            llm_with_tools=orchestrator_llm,
-            messages=messages,
-            session_id=session_id,
-            tool_call_rag=tool_call_rag,
-            worker_llm=planner,
-            send_to_acp=send_to_acp
-        )
+        result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag,send_to_acp, output_schema=Plan)
 
         return {"plan": result, "iterations": state.iterations + 1}
 
@@ -187,16 +145,7 @@ async def run_workflow(
             HumanMessage(content=f"Instructions: {state.plan.coder_instructions}"),
         ]
 
-        result = await tool_call(
-            max_tool_iterations=5,
-            llm_with_tools=coder_llm,
-            messages=messages,
-            session_id=session_id,
-            tool_call_rag=tool_call_rag,
-            worker_llm=None,
-            send_to_acp=send_to_acp
-        )
-
+        result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag, send_to_acp)
         return {"completed_task": [{"agent": "coder", "output": result.content}]}
 
 
@@ -210,6 +159,8 @@ async def run_workflow(
             SystemMessage(
                 content="You are an expert QA, security, and test engineer. "
                 "Your task is to rigorously review, test, and audit the code produced by the coder agent."
+                "When you have everything you need, submit your final answer by calling the Verdict tool."
+                "Do not write the answer as plain text."
             ),
             HumanMessage(content=(
                 f"Instructions: {state.plan.validator_instructions}\n\n"
@@ -218,15 +169,7 @@ async def run_workflow(
             )),
         ]
 
-        verdict = await tool_call(
-            max_tool_iterations=3,
-            llm_with_tools=validator_llm,
-            messages=messages,
-            session_id=session_id,
-            tool_call_rag=tool_call_rag,
-            worker_llm=judge,
-            send_to_acp=send_to_acp
-        )
+        verdict = await tool_call(3, llm, tools, messages, session_id, tool_call_rag, send_to_acp, output_schema=Verdict)
 
         return {
             "is_validated": verdict.is_validated if isinstance(verdict, Verdict) else False,
@@ -254,7 +197,7 @@ async def run_workflow(
             ),
         ]
 
-        response = await llm.ainvoke(messages)
+        response = await synthesizer_llm.ainvoke(messages)
         return {"response": [response.content]}
 
 
