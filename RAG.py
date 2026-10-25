@@ -29,7 +29,7 @@ class rag:
         return f"updated {id}"
 
 
-    def search_memory(self, query: str, collection:str, n_results: int = 10, contains: str | None = None):
+    def search_memory(self, query: str, collection:str, n_results: int = 3, contains: str | None = None):
         """Semantic search. Returns a flat, JSON-safe list of hits."""
         if collection not in (TOOLS, CHAT_HISTORY):
             raise ValueError(f"Unknown collection '{collection}'")
@@ -93,4 +93,6 @@ async def add_mcp_tools_to_collection(store: rag) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(add_mcp_tools_to_collection(rag()))
+    res = asyncio.run(rag().search_memory(query="read", collection=TOOLS))
+    print([res["id"] for res in res])
+    #asyncio.run(add_mcp_tools_to_collection(rag()))

@@ -1,3 +1,7 @@
+- use my home PC as server for the oral exam for more speed
+- add who think in the chat panel between the node/agent
+- add memory between prompt 
+- no2 : usage context doesn't represent the real context of all the agents 
 # project
 
 - agent 1 = the validator (test, security, etc.)
