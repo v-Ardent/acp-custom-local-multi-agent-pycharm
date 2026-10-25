@@ -79,7 +79,6 @@ class NoesisAgent(Agent):
         try:
             cfg = self._mcp_cfg
             url = cfg.url if cfg and cfg.name == "pycharm_MCP" else pycharm_MCP_URL
-            logging.info(f"MCP URL: {url}")
             async with streamable_http_client(url) as streams:
                 async with ClientSession(streams[0], streams[1]) as mcp:
                     await mcp.initialize()
