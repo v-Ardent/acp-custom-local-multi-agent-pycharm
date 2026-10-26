@@ -1,8 +1,10 @@
+import logging
 from typing import Annotated, List, Callable, Any, Coroutine, TypedDict
 import operator
 from uuid import uuid4
 
-from acp import update_agent_thought, update_agent_message_text, start_tool_call, update_tool_call
+from acp import update_agent_thought, update_agent_message_text, start_tool_call, update_tool_call, tool_content, \
+    text_block
 from acp.schema import TextContentBlock, UsageUpdate, Cost, SessionNotification, SessionInfoUpdate
 from langchain_core.messages import ToolMessage, AIMessage, AnyMessage, ToolCall
 from pydantic import BaseModel, Field, ValidationError
@@ -61,6 +63,23 @@ class AgentHistory(TypedDict, total=False):
     context_used: int
 
 
+def format_plan(obj: BaseModel) -> str:
+    def bullets(items): return "\n".join(f"- {i}" for i in items)
+    if isinstance(obj, Plan):
+        return (
+            f"**Objective**\n{obj.objective}\n\n"
+            f"**Coder instructions**\n{bullets(obj.coder_instructions)}\n\n"
+            f"**Validator instructions**\n{bullets(obj.validator_instructions)}\n\n"
+            f"**Acceptance criteria**\n{bullets(obj.acceptance_criteria)}"
+        )
+    elif isinstance(obj, Verdict):
+        return (
+            f"**is_validated**\n{obj.is_validated}\n\n"
+            f"**feedback**\n{obj.feedback}\n\n"
+        )
+    return obj.model_dump_json(indent=2)
+
+
 async def tool_call(
     max_tool_iterations: int,
     base_llm,
@@ -97,12 +116,13 @@ async def tool_call(
             agent_history["content"] = response.content
             return response
 
-        final: ToolCall | None  = next((c for c in response.tool_calls if c["name"] == schema_tool), None)
+        final: ToolCall | None = next((c for c in response.tool_calls if c["name"] == schema_tool), None)
         if final:
             final_id = final["id"] or f"{final['name']}-{uuid4()}"
             try:
-                await send_to_acp(session_id, start_tool_call(final_id, f"Running {final['name']}", kind="execute", status="in_progress", raw_input=final["args"]))
                 answer = output_schema(**final["args"])
+                await send_to_acp(session_id, start_tool_call(final_id, f"Running {final['name']}", kind=None, status="in_progress", raw_input=final["args"]))
+                logging.info(answer)
             except ValidationError as exc:
                 messages.append(response)
                 for c in response.tool_calls:
@@ -113,7 +133,19 @@ async def tool_call(
                         status="error",
                     ))
                 continue
-            await send_to_acp(session_id, update_tool_call(final_id, title=f"{final['name']} submitted", status="completed", raw_output=answer.model_dump(), content=answer.model_dump()))
+            payload = answer.model_dump()
+            logging.info(payload)
+
+            await send_to_acp(
+                session_id,
+                update_tool_call(
+                    final_id,
+                    title=f"{final['name']} submitted",
+                    status="completed",
+                    raw_output=payload,
+                    content=[tool_content(text_block(format_plan(answer)))],
+                ),
+            )
             agent_history["content"] = str(answer)
             return answer
 
@@ -122,7 +154,7 @@ async def tool_call(
             tool_name, arguments, call_id = call["name"], call["args"], call["id"]
             status = "success"
             try:
-                await send_to_acp(session_id, start_tool_call(call_id, f"Running {tool_name}", kind="execute", status="in_progress", raw_input=arguments))
+                await send_to_acp(session_id, start_tool_call(call_id, f"Running {tool_name}", kind=None, status="in_progress", raw_input=arguments))
                 tool_result = await tool_call_rag(session_id, tool_name, arguments)
                 await send_to_acp(session_id, update_tool_call(call_id, title=f"Tool {tool_name} completed successfully", status="completed", raw_output=tool_result))
             except Exception as exc:
@@ -268,12 +300,10 @@ async def run_workflow(
 
         messages = [
             SystemMessage(
-                content="You are an expert technical communicator and final review synthesizer. "
-                        "Your task is to synthesize the provided user_input into a clear, polished, "
-                        "and comprehensive final response. Focus exclusively on presenting the synthesized " 
-                        "content. Do not comment on, describe, evaluate, or refer to the user_input itself. " 
-                        "Do not include meta-commentary, introductions about your task, or explanations of " 
-                        "your synthesis process. Deliver only the final synthesized response."
+                content="You are an expert technical communicator and final-response synthesizer. "
+                        "Use the Original User Request as the primary prompt to determine what the "
+                        "final response should accomplish, and treat the Final Implemented Code as the "
+                        "solution you wrote and the source of truth for what was implemented."
             ),
             HumanMessage(
                 content=(
