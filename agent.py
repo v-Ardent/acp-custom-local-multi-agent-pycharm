@@ -1,7 +1,5 @@
 import asyncio
 from typing import Any
-from pathlib import Path
-from dotenv import load_dotenv
 from mcp.client.streamable_http import streamable_http_client
 from ollama import AsyncClient
 import json
@@ -32,9 +30,6 @@ from acp.schema import (
     AgentCapabilities, PromptCapabilities, McpCapabilities, SessionCapabilities,
     AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities,
 )
-
-RACINE = Path(__file__).resolve().parent.parent
-load_dotenv(RACINE / ".env")
 
 
 def extract_text(block: Any) -> str:
@@ -193,7 +188,6 @@ class NoesisAgent(Agent):
         try:
             if name == "search_memory":
                 hits = await asyncio.to_thread(self._rag.search_memory, **args)
-                logging.info("Found hits: %s", hits)
                 if args.get("collection") == TOOLS:
                     for h in hits:
                         discovered[h["id"]] = {

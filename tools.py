@@ -4,10 +4,25 @@ CORE_TOOLS: list[dict] = [
         "function": {
             "name": "search_memory",
             "description": (
-                "Semantic search over long-term memory. Use collection='tools' to FIND tools "
-                "you do not have yet (describe the high-level capability, e.g., 'file management'). "
-                "Use collection='chat_history' to recall earlier conversations or facts about the user."
-            ),
+                "Semantic search over long-term memory. This tool has two distinct purposes. "
+
+                "1. Use collection='tools' to discover tools and capabilities that may be "
+                "available to help fulfill the user's request. Search for the high-level "
+                "capability needed, such as 'file management', 'web search', or 'database access'. "
+                "Use the returned information to identify relevant tools and determine how "
+                "to use them. "
+
+                "2. Use collection='chat_history' to retrieve relevant long-term memories about "
+                "the user, including previously shared facts, preferences, projects, technical "
+                "requirements, environment details, and context from past conversations. "
+                "Use this information when it is relevant to answering the request or planning "
+                "its execution. "
+
+                "Do not use this tool to recall messages already present in the current conversation. "
+                "The current conversation history is provided directly in the messages. "
+                "Search chat_history for relevant information from long-term memory beyond "
+                "the current conversation. Avoid retrieving unrelated memories."
+),
             "parameters": {
                 "type": "object",
                 "properties": {
