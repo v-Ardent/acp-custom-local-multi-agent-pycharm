@@ -1,8 +1,10 @@
-from typing import Annotated, List, Callable, Any, Coroutine
+from typing import Annotated, List, Callable, Any, Coroutine, TypedDict
 import operator
+from uuid import uuid4
+
 from acp import update_agent_thought, update_agent_message_text, start_tool_call, update_tool_call
 from acp.schema import TextContentBlock, UsageUpdate, Cost, SessionNotification, SessionInfoUpdate
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, AIMessage, AnyMessage, ToolCall
 from pydantic import BaseModel, Field, ValidationError
 from langgraph.graph import StateGraph, START, END
 from langchain.messages import HumanMessage, SystemMessage
@@ -48,6 +50,16 @@ class State(BaseModel):
     iterations: int = 0
     session_id: str
 
+class Turn(TypedDict):
+    prompt: str
+    answer: str
+
+class AgentHistory(TypedDict, total=False):
+    content: Any
+    tool_messages: list[ToolMessage]
+    turns: list[Turn]
+    context_used: int
+
 
 async def tool_call(
     max_tool_iterations: int,
@@ -58,11 +70,19 @@ async def tool_call(
     tool_call_rag,
     send_to_acp,
     output_schema: type[BaseModel] | None = None,
-    require_schema: bool = False
+    require_schema: bool = False,
+    session_history: dict[str, AgentHistory] | None = None,
+    agent_name: str = "",
 ):
     """Tool loop. If output_schema is given, the model submits its final answer by
     calling a tool named after the schema, so no extra structured-output call is needed."""
     schema_tool = output_schema.__name__ if output_schema else None
+
+    if session_history is None:
+        session_history = {}
+
+    agent_history = session_history.setdefault(agent_name, {})
+    tool_messages = agent_history.setdefault("tool_messages", [])
 
     for _ in range(max_tool_iterations):
         bound = tools(session_id) + ([output_schema] if output_schema else [])
@@ -74,33 +94,57 @@ async def tool_call(
                 messages.append(
                     HumanMessage(content=f"Submit your answer by calling the {schema_tool} tool, not as plain text."))
                 continue
+            agent_history["content"] = response.content
             return response
 
-        final = next((c for c in response.tool_calls if c["name"] == schema_tool), None)
+        final: ToolCall | None  = next((c for c in response.tool_calls if c["name"] == schema_tool), None)
         if final:
+            final_id = final["id"] or f"{final['name']}-{uuid4()}"
             try:
-                return output_schema(**final["args"])
+                await send_to_acp(session_id, start_tool_call(final_id, f"Running {final['name']}", kind="execute", status="in_progress", raw_input=final["args"]))
+                answer = output_schema(**final["args"])
             except ValidationError as exc:
                 messages.append(response)
                 for c in response.tool_calls:
-                    messages.append(ToolMessage(content=f"Invalid {schema_tool}: {exc}. Call {schema_tool} again with valid fields.", tool_call_id=c["id"]))
+                    messages.append(ToolMessage(
+                        content=f"Invalid {schema_tool}: {exc}. Call {schema_tool} again with valid fields.",
+                        tool_call_id=c["id"],
+                        name=c["name"],
+                        status="error",
+                    ))
                 continue
+            await send_to_acp(session_id, update_tool_call(final_id, title=f"{final['name']} submitted", status="completed", raw_output=answer.model_dump(), content=answer.model_dump()))
+            agent_history["content"] = str(answer)
+            return answer
 
         messages.append(response)
         for call in response.tool_calls:
             tool_name, arguments, call_id = call["name"], call["args"], call["id"]
+            status = "success"
             try:
                 await send_to_acp(session_id, start_tool_call(call_id, f"Running {tool_name}", kind="execute", status="in_progress", raw_input=arguments))
                 tool_result = await tool_call_rag(session_id, tool_name, arguments)
                 await send_to_acp(session_id, update_tool_call(call_id, title=f"Tool {tool_name} completed successfully", status="completed", raw_output=tool_result))
             except Exception as exc:
+                status = "error"
                 tool_result = f"Error executing tool {tool_name}: {exc}"
                 await send_to_acp(session_id, update_tool_call(call_id, title=f"Tool {tool_name} failed", status="failed", raw_output=str(exc)))
-            messages.append(ToolMessage(content=str(tool_result), tool_call_id=call_id))
+
+            tool_message = ToolMessage(
+                content=str(tool_result),
+                artifact={"tool": tool_name, "args": arguments, "raw": tool_result},
+                tool_call_id=call_id,
+                name=tool_name,
+                status=status,
+            )
+            messages.append(tool_message)
+            tool_messages.append(tool_message)
 
     await send_to_acp(session_id, SessionNotification(sessionId=session_id, update=SessionInfoUpdate(title="max iteration exceeded", _meta=None,sessionUpdate="session_info_update", updatedAt=None),_meta=None))
     messages.append(HumanMessage(content="Answer now with the information you have."))
-    return await base_llm.ainvoke(messages)
+    answer = await base_llm.ainvoke(messages)
+    agent_history["content"] = answer.content
+    return answer
 
 
 async def run_workflow(
@@ -108,13 +152,26 @@ async def run_workflow(
     send_to_acp: Callable[[str, Any], Coroutine[Any, Any, None]],
     session_id: str,
     tool_call_rag: Callable[[str, str, dict[str, Any]], Coroutine[Any, Any, str]],
-    tools: Callable[[str], list[dict[Any, Any]]]
+    tools: Callable[[str], list[dict[Any, Any]]],
+    session_history : dict[str, AgentHistory]
 ):
-    synthesizer_llm = llm.bind(think=False)
+    session_history = session_history if session_history is not None else {}
+    turns = session_history.setdefault("orchestrator", {}).setdefault("turns", [])
+
+    def render_tool_history(history: dict[str, AgentHistory]) -> str:
+        """Compact text view of every tool call made so far, for the orchestrator."""
+        lines = []
+        for agent, data in history.items():
+            for tm in data.get("tool_messages", []):
+                art = tm.artifact or {}
+                lines.append(
+                    f"[{agent}] {tm.name}({art.get('args', {})}) -> {tm.status}: {str(tm.content)[:500]}"
+                )
+        return "\n".join(lines)
 
     async def orchestrator(state: State):
         """Orchestrator that generates a structured plan."""
-        messages = [
+        messages: list[AnyMessage] = [
             SystemMessage(
                 content="You are an expert AI orchestrator and technical project manager. "
                 "Your job is to analyze the user's request, break it down into a clear, logical, "
@@ -125,15 +182,29 @@ async def run_workflow(
                 "If the request is a question, a conversation, or something you can answer directly "
                 "(optionally after using your tools), answer in plain text and do not call Plan. "
                 "Call Plan only when the task requires writing or modifying code that needs implementation and validation."
+                "The earlier conversation is provided as chat messages before the current request. "
+                "Answer questions about previous prompts or answers directly from those messages. "
+                "Never use search_memory to recall the conversation. "
+                "The last message is the CURRENT request; 'the last prompt' means the user message before it. "
             ),
-            HumanMessage(content=state.user_prompt),
         ]
+        for t in turns[-10:]:
+            messages.append(HumanMessage(content=t["prompt"]))
+            messages.append(AIMessage(content=t["answer"]))
+
+        tool_context = render_tool_history(session_history)
+        if tool_context:
+            messages.append(HumanMessage(
+                content=f"Tool results gathered so far (by all agents):\n{tool_context}"))
+
+        messages.append(HumanMessage(content=state.user_prompt))
+
         if state.completed_task:
             last = state.completed_task[-1]
             messages.append(HumanMessage(content=f"Previous validation feedback: {last['output']}"))
 
         result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag, send_to_acp,
-                                 output_schema=Plan, require_schema=False)
+                                 output_schema=Plan, require_schema=False, agent_name="orchestrator", session_history=session_history)
 
         if isinstance(result, Plan):
             return {"plan": result, "iterations": state.iterations + 1}
@@ -156,7 +227,7 @@ async def run_workflow(
             HumanMessage(content=f"Instructions: {state.plan.coder_instructions}"),
         ]
 
-        result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag, send_to_acp, require_schema=False)
+        result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag, send_to_acp, require_schema=False, agent_name="coder", session_history=session_history)
         return {"completed_task": [{"agent": "coder", "output": result.content}]}
 
 
@@ -180,7 +251,7 @@ async def run_workflow(
             )),
         ]
 
-        verdict = await tool_call(3, llm, tools, messages, session_id, tool_call_rag, send_to_acp, output_schema=Verdict, require_schema=True)
+        verdict = await tool_call(3, llm, tools, messages, session_id, tool_call_rag, send_to_acp, output_schema=Verdict, require_schema=True, agent_name="validator", session_history=session_history)
 
         return {
             "is_validated": verdict.is_validated if isinstance(verdict, Verdict) else False,
@@ -198,7 +269,11 @@ async def run_workflow(
         messages = [
             SystemMessage(
                 content="You are an expert technical communicator and final review synthesizer. "
-                "Your task is to create a clear, polished, and comprehensive final response for the user."
+                        "Your task is to synthesize the provided user_input into a clear, polished, "
+                        "and comprehensive final response. Focus exclusively on presenting the synthesized " 
+                        "content. Do not comment on, describe, evaluate, or refer to the user_input itself. " 
+                        "Do not include meta-commentary, introductions about your task, or explanations of " 
+                        "your synthesis process. Deliver only the final synthesized response."
             ),
             HumanMessage(
                 content=(
@@ -208,7 +283,7 @@ async def run_workflow(
             ),
         ]
 
-        response = await synthesizer_llm.ainvoke(messages)
+        response = await llm.ainvoke(messages)
         return {"response": [response.content]}
 
 
@@ -221,6 +296,18 @@ async def run_workflow(
 
     def route_orchestrator(state: State):
         return "coder" if state.plan is not None else "no_plan_needed"
+
+    async def send_usage(used: int):
+        await send_to_acp(
+            session_id,
+            UsageUpdate(
+                used=used,
+                size=MAX_CONTEXT_SIZE,
+                cost=Cost(amount=0, currency="EUR", _meta=None),
+                field_meta=None,
+                session_update="usage_update",
+            ),
+        )
 
     # Build and compile graph
     builder = StateGraph(State)
@@ -240,34 +327,37 @@ async def run_workflow(
     graph = builder.compile()
 
     current_node = None
-    usage = 0
+    answer_parts: list[str] = []
 
-    async for chunk, metadata in graph.astream({"user_prompt": user_prompt, "session_id": session_id}, stream_mode="messages"):
-        node = metadata.get("langgraph_node")
-        if node != current_node:
-            current_node = node
+    try:
+        async for chunk, metadata in graph.astream({"user_prompt": user_prompt, "session_id": session_id}, stream_mode="messages"):
+            node = metadata.get("langgraph_node")
 
-        reasoning = chunk.additional_kwargs.get("reasoning_content")
-        if reasoning:
-            await send_to_acp(
-                session_id,
-                update_agent_thought(TextContentBlock(text=reasoning, type="text", field_meta=None)),
-            )
+            if node != current_node:
+                current_node = node
+                await send_to_acp(session_id, update_agent_message_text(f"Agent {current_node} is generating his answer."))
 
-        if current_node not in ("coder", "validator") and isinstance(chunk.content, str) and chunk.content:
-            await send_to_acp(
-                session_id, update_agent_message_text(chunk.content)
-            )
+            reasoning = chunk.additional_kwargs.get("reasoning_content")
+            if reasoning:
+                await send_to_acp(
+                    session_id,
+                    update_agent_thought(TextContentBlock(text=reasoning, type="text", field_meta=None)),
+                )
 
-        if getattr(chunk, "usage_metadata", None):
-            usage += chunk.usage_metadata.get("total_tokens")
-            await send_to_acp(
-                session_id,
-                UsageUpdate(
-                    used=usage,
-                    size=MAX_CONTEXT_SIZE,
-                    cost=Cost(amount=0, currency="EUR", _meta=None),
-                    field_meta=None,
-                    session_update="usage_update",
-                ),
-            )
+            if current_node not in ("coder", "validator") and isinstance(chunk.content, str) and chunk.content:
+                await send_to_acp(
+                    session_id, update_agent_message_text(chunk.content)
+                )
+
+            if current_node in ("orchestrator", "synthesizer") and isinstance(chunk.content, str) and chunk.content:
+                answer_parts.append(chunk.content)
+
+            if getattr(chunk, "usage_metadata", None) and current_node == "orchestrator":
+                um = chunk.usage_metadata
+                used = (um.get("input_tokens") or 0) + (um.get("output_tokens") or 0)
+
+                if current_node == "orchestrator":
+                    session_history["orchestrator"]["context_used"] = used
+                    await send_usage(used)
+    finally:
+        turns.append({"prompt": user_prompt, "answer": "".join(answer_parts)})

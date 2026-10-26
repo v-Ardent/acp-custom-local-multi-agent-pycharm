@@ -9,7 +9,7 @@ from mcp import ClientSession
 import logging
 from tools import CORE_TOOLS
 from RAG import rag, TOOLS
-from agent_workflow import run_workflow
+from agent_workflow import run_workflow, AgentHistory
 from config import pycharm_MCP_URL, MAX_ACTIVE_DISCOVERED
 from acp import (
     PROTOCOL_VERSION,
@@ -64,6 +64,7 @@ class NoesisAgent(Agent):
         self._discovered: dict[str, dict[str, dict]] = {}
         self._mcp_cfg: HttpMcpServer | None = None
         self.context_size = 0
+        self.session_history: dict[str, AgentHistory] = {}
 
 
     async def _run_mcp(self) -> None:
@@ -233,7 +234,7 @@ class NoesisAgent(Agent):
 
         try:
             await self._get_mcp()
-            await run_workflow(text, self._send, session_id, self._call_tool, self._active_tools)
+            await run_workflow(text, self._send, session_id, self._call_tool, self._active_tools, self.session_history)
 
         except Exception as exc:
             await self._send(
