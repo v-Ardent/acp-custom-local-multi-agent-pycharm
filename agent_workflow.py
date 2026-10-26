@@ -1,10 +1,9 @@
+import json
 import logging
 from typing import Annotated, List, Callable, Any, Coroutine, TypedDict
 import operator
 from uuid import uuid4
-
-from acp import update_agent_thought, update_agent_message_text, start_tool_call, update_tool_call, tool_content, \
-    text_block
+from acp import update_agent_thought, update_agent_message_text, start_tool_call, update_tool_call, tool_content, text_block
 from acp.schema import TextContentBlock, UsageUpdate, Cost, SessionNotification, SessionInfoUpdate
 from langchain_core.messages import ToolMessage, AIMessage, AnyMessage, ToolCall
 from pydantic import BaseModel, Field, ValidationError
@@ -153,17 +152,34 @@ async def tool_call(
         for call in response.tool_calls:
             tool_name, arguments, call_id = call["name"], call["args"], call["id"]
             status = "success"
+
+            await send_to_acp(
+                session_id,
+                start_tool_call(call_id, f"Running {tool_name}", kind="other",
+                                status="in_progress", raw_input=arguments),
+            )
+
             try:
-                await send_to_acp(session_id, start_tool_call(call_id, f"Running {tool_name}", kind=None, status="in_progress", raw_input=arguments))
                 tool_result = await tool_call_rag(session_id, tool_name, arguments)
-                await send_to_acp(session_id, update_tool_call(call_id, title=f"Tool {tool_name} completed successfully", status="completed", raw_output=tool_result))
             except Exception as exc:
                 status = "error"
                 tool_result = f"Error executing tool {tool_name}: {exc}"
-                await send_to_acp(session_id, update_tool_call(call_id, title=f"Tool {tool_name} failed", status="failed", raw_output=str(exc)))
+
+            result_text = tool_result if isinstance(tool_result, str) else json.dumps(tool_result, default=str)
+
+            await send_to_acp(
+                session_id,
+                update_tool_call(
+                    call_id,
+                    title=f"Tool {tool_name} {'completed successfully' if status == 'success' else 'failed'}",
+                    status="completed" if status == "success" else "failed",
+                    raw_output=tool_result if status == "success" else result_text,
+                    content=[tool_content(text_block(result_text[:5000]))],
+                ),
+            )
 
             tool_message = ToolMessage(
-                content=str(tool_result),
+                content=result_text,
                 artifact={"tool": tool_name, "args": arguments, "raw": tool_result},
                 tool_call_id=call_id,
                 name=tool_name,
@@ -205,19 +221,55 @@ async def run_workflow(
         """Orchestrator that generates a structured plan."""
         messages: list[AnyMessage] = [
             SystemMessage(
-                content="You are an expert AI orchestrator and technical project manager. "
-                "Your job is to analyze the user's request, break it down into a clear, logical, "
-                "and structured execution plan, and provide explicit, actionable instructions "
-                "for both the Coder and Validator agents. "
-                "When you have everything you need, submit your final answer by calling the "
-                "Plan tool. Do not write the answer as plain text. "
-                "If the request is a question, a conversation, or something you can answer directly "
-                "(optionally after using your tools), answer in plain text and do not call Plan. "
-                "Call Plan only when the task requires writing or modifying code that needs implementation and validation."
-                "The earlier conversation is provided as chat messages before the current request. "
-                "Answer questions about previous prompts or answers directly from those messages. "
-                "Never use search_memory to recall the conversation. "
-                "The last message is the CURRENT request; 'the last prompt' means the user message before it. "
+                content=(
+                    "You are an expert AI orchestrator and technical project manager. "
+                    "Your job is to analyze the user's request, break it down into a clear, logical, "
+                    "and structured execution plan, and provide explicit, actionable instructions "
+                    "for both the Coder and Validator agents. "
+
+                    "You have access to a search_memory tool that can search both the available tool "
+                    "catalog and long-term memory about the user. Use it proactively whenever relevant "
+                    "to identify tools you do not currently have access to, discover capabilities "
+                    "needed to fulfill the request, or retrieve relevant facts, preferences, context, "
+                    "and information about the user from previous conversations. "
+
+                    "Use search_memory with collection='tools' to discover tools and capabilities "
+                    "that may help accomplish the task. Search using concise descriptions of the "
+                    "required capability, then use the discovered tool information to determine "
+                    "which tools are available and how they can be used. "
+
+                    "Use search_memory with collection='chat_history' to retrieve relevant long-term "
+                    "memories about the user, including their preferences, projects, requirements, "
+                    "technical environment, and previously shared information. Search memory when "
+                    "personalization, continuity, or missing context could improve the answer or "
+                    "execution plan. Do not assume that relevant information is absent just because "
+                    "it is not included in the current messages. However, do not retrieve or use "
+                    "memories that are irrelevant to the current request. "
+
+                    "The earlier conversation is provided as chat messages before the current request. "
+                    "Use those messages directly to answer questions about previous prompts, answers, "
+                    "and events within the current conversation. Never use search_memory to recall "
+                    "information that is already available in the provided conversation history. "
+                    "Use search_memory with collection='chat_history' for relevant long-term memories "
+                    "and information about the user beyond the current conversation. "
+
+                    "The last message is the CURRENT request; 'the last prompt' means the user "
+                    "message immediately before it. "
+
+                    "When you have everything you need and the request requires writing or modifying "
+                    "code that needs implementation and validation, submit your final answer by "
+                    "calling the Plan tool. Do not write the implementation plan as plain text "
+                    "instead of calling Plan. Provide explicit, actionable instructions for both "
+                    "the Coder and Validator agents. "
+
+                    "If the request is a question, a conversation, or something you can answer directly, "
+                    "optionally after using your tools or searching memory, answer in plain text "
+                    "and do not call Plan. "
+
+                    "Call Plan only when the task requires writing or modifying code that needs "
+                    "implementation and validation. Do not call Plan for general questions, "
+                    "conversations, explanations, or tasks that can be completed directly."
+                ),
             ),
         ]
         for t in turns[-10:]:

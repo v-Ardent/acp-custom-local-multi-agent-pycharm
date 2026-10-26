@@ -13,7 +13,7 @@ CHAT_HISTORY = "chat_history"
 
 class rag:
     def __init__(self):
-        self.client = chromadb.PersistentClient(path="./memoire")
+        self.client = chromadb.PersistentClient(path="[PROJECT_PATH]\\memoire")
 
 
     def add_to_collection(self, document: str, id: str,metadata: dict[str, str | int | float | bool] | None = None) -> str:
