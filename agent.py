@@ -8,7 +8,7 @@ import logging
 from tools import CORE_TOOLS
 from RAG import rag, TOOLS
 from agent_workflow import run_workflow, AgentHistory
-from config import pycharm_MCP_URL, MAX_ACTIVE_DISCOVERED
+from config import PYCHARM_MCP_URL, MAX_ACTIVE_DISCOVERED
 from acp import (
     PROTOCOL_VERSION,
     Agent,
@@ -33,6 +33,7 @@ from acp.schema import (
 
 
 def extract_text(block: Any) -> str:
+    """Extract text from a dictionary or an object containing a text attribute."""
     if isinstance(block, dict):
         return str(block.get("text", ""))
 
@@ -42,9 +43,11 @@ def extract_text(block: Any) -> str:
 
 
 class NoesisAgent(Agent):
+    """Manage agent sessions, MCP connections, tool discovery, and workflow execution."""
     _conn: Client
 
     def __init__(self) -> None:
+        """Initialize the LLM client, MCP state, RAG system, and session history."""
         self._next_session_id = 0
         self._sessions: set[str] = set()
 
@@ -63,9 +66,10 @@ class NoesisAgent(Agent):
 
 
     async def _run_mcp(self) -> None:
+        """Establish the MCP connection, initialize tools, and wait for shutdown."""
         try:
             cfg = self._mcp_cfg
-            url = cfg.url if cfg and cfg.name == "pycharm_MCP" else pycharm_MCP_URL
+            url = cfg.url if cfg and cfg.name == "pycharm_MCP" else PYCHARM_MCP_URL
             async with streamable_http_client(url) as streams:
                 async with ClientSession(streams[0], streams[1]) as mcp:
                     await mcp.initialize()
@@ -86,6 +90,7 @@ class NoesisAgent(Agent):
 
 
     async def _get_mcp(self) -> ClientSession:
+        """Start the MCP connection if necessary and return the active session."""
         if self._mcp_task is None:
             self._mcp_task = asyncio.create_task(self._run_mcp())
         await self._mcp_ready.wait()
@@ -96,17 +101,19 @@ class NoesisAgent(Agent):
 
 
     async def close(self) -> None:
+        """Signal the MCP connection to stop and wait for its task to finish."""
         self._mcp_stop.set()
         if self._mcp_task:
             await self._mcp_task
 
 
     def on_connect(self, conn: Client) -> None:
+        """Store the ACP client connection used to send session updates."""
         self._conn = conn
 
 
     async def initialize(self, protocol_version: int, client_capabilities: ClientCapabilities | None = None, client_info: Implementation | None = None, **kwargs: Any) -> InitializeResponse:
-        logging.info("Received initialize request")
+        """Negotiate protocol capabilities and return the agent's metadata."""
         agent_capabilities = AgentCapabilities(
             load_session=True,
             prompt_capabilities=PromptCapabilities(
@@ -152,6 +159,7 @@ class NoesisAgent(Agent):
             mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
             **kwargs: Any,
     ) -> NewSessionResponse:
+        """Create a session, assign its ID, and configure the requested HTTP MCP server."""
         logging.info("Received new session request")
         session_id = str(self._next_session_id)
         self._next_session_id += 1
@@ -173,16 +181,19 @@ class NoesisAgent(Agent):
             additional_directories: list[str] | None = None,
             **kwargs: Any,
     ) -> LoadSessionResponse | None:
+        """Register an existing session so it can continue processing requests."""
         logging.info("Received load session request %s", session_id)
         self._sessions.add(session_id)
         return LoadSessionResponse(_meta=None, configOptions=None)
 
 
     async def set_session_mode(self, session_id: str, mode_id: str, **kwargs: Any) -> SetSessionModeResponse | None:
+        """Handle a session mode change notification."""
         logging.info("Received set session mode request %s -> %s", session_id, mode_id)
         return SetSessionModeResponse(_meta=None)
 
     async def _call_tool(self, session_id: str, name: str, args: dict[str, Any]) -> str:
+        """Execute a RAG or MCP tool and return its result."""
         discovered = self._discovered.setdefault(session_id, {})
 
         try:
@@ -223,6 +234,7 @@ class NoesisAgent(Agent):
 
 
     async def prompt(self, session_id: str, prompt: Any, **kwargs: Any) -> PromptResponse:
+        """Process a user prompt through the workflow and return the completion response."""
         self._sessions.add(session_id)
         text = "\n".join(extract_text(b) for b in prompt)
 
@@ -239,23 +251,28 @@ class NoesisAgent(Agent):
 
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
+        """Handle a cancellation notification for the specified session."""
         logging.info("Received cancel notification for session %s", session_id)
 
 
     async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Handle an extension method call and return a placeholder response."""
         logging.info("Received extension method call: %s", method)
         return {"example": "response"}
 
 
     async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
+        """Handle an extension notification."""
         logging.info("Received extension notification: %s", method)
 
 
     async def _send(self, session_id: str, update: Any) -> None:
+        """Send an agent update to the connected ACP client."""
         await self._conn.session_update(session_id, update)
 
 
 async def main() -> None:
+    """Configure logging, run the agent, and clean up its resources."""
     logging.basicConfig(level=logging.INFO)
     agent = NoesisAgent()
 
