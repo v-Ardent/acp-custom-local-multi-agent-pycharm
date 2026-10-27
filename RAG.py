@@ -5,7 +5,7 @@ from chromadb import WhereDocument
 from mcp.client.streamable_http import streamable_http_client
 from mcp import ClientSession
 import json
-from config import pycharm_MCP_URL
+from config import PYCHARM_MCP_URL, CHROMA_DB_PATH
 
 TOOLS = "tools"
 CHAT_HISTORY = "chat_history"
@@ -13,7 +13,7 @@ CHAT_HISTORY = "chat_history"
 
 class rag:
     def __init__(self):
-        self.client = chromadb.PersistentClient(path="[PROJECT_PATH]\\memoire")
+        self.client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 
 
     def add_to_collection(self, document: str, id: str,metadata: dict[str, str | int | float | bool] | None = None) -> str:
@@ -63,7 +63,7 @@ class rag:
 
 
 async def add_mcp_tools_to_collection(store: rag) -> None:
-    async with streamable_http_client(pycharm_MCP_URL) as streams:
+    async with streamable_http_client(PYCHARM_MCP_URL) as streams:
         async with ClientSession(streams[0], streams[1]) as mcp:
             await mcp.initialize()
             tools = (await mcp.list_tools()).tools
@@ -93,6 +93,8 @@ async def add_mcp_tools_to_collection(store: rag) -> None:
 
 
 if __name__ == "__main__":
-    res = asyncio.run(rag().search_memory(query="read", collection=TOOLS))
-    print([res["id"] for res in res])
+    pass
+    """
+    run this one time to store the pycharm_MCP into the chromaDB : asyncio.run(add_mcp_tools_to_collection(rag()))
+    """
     #asyncio.run(add_mcp_tools_to_collection(rag()))
