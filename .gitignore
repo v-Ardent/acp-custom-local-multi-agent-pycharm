@@ -1,2 +1,5 @@
 .idea
 memoire
+.env
+.env.*
+__pycache__/
