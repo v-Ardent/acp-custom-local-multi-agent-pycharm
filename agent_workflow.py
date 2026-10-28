@@ -287,7 +287,7 @@ async def run_workflow(
             last = state.completed_task[-1]
             messages.append(HumanMessage(content=f"Previous validation feedback: {last['output']}"))
 
-        result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag, send_to_acp,
+        result = await tool_call(MAX_ITERATIONS, llm, tools, messages, session_id, tool_call_rag, send_to_acp,
                                  output_schema=Plan, require_schema=False, agent_name="orchestrator", session_history=session_history)
 
         if isinstance(result, Plan):
@@ -311,7 +311,7 @@ async def run_workflow(
             HumanMessage(content=f"Instructions: {state.plan.coder_instructions}"),
         ]
 
-        result = await tool_call(5, llm, tools, messages, session_id, tool_call_rag, send_to_acp, require_schema=False, agent_name="coder", session_history=session_history)
+        result = await tool_call(MAX_ITERATIONS, llm, tools, messages, session_id, tool_call_rag, send_to_acp, require_schema=False, agent_name="coder", session_history=session_history)
         return {"completed_task": [{"agent": "coder", "output": result.content}]}
 
 
@@ -335,7 +335,7 @@ async def run_workflow(
             )),
         ]
 
-        verdict = await tool_call(3, llm, tools, messages, session_id, tool_call_rag, send_to_acp, output_schema=Verdict, require_schema=True, agent_name="validator", session_history=session_history)
+        verdict = await tool_call(MAX_ITERATIONS, llm, tools, messages, session_id, tool_call_rag, send_to_acp, output_schema=Verdict, require_schema=True, agent_name="validator", session_history=session_history)
 
         return {
             "is_validated": verdict.is_validated if isinstance(verdict, Verdict) else False,
