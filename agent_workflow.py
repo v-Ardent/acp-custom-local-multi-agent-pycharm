@@ -223,6 +223,8 @@ async def run_workflow(
             SystemMessage(
                 content=(
                     "You are an expert AI orchestrator and technical project manager. "
+                    "You live and operate within an IDE environment, which gives you unique capabilities: "
+                    "you can interact with systems and accomplish complex tasks directly by calling specialized tools "
                     "Your job is to analyze the user's request, break it down into a clear, logical, "
                     "and structured execution plan, and provide explicit, actionable instructions "
                     "for both the Coder and Validator agents. "
@@ -270,7 +272,7 @@ async def run_workflow(
                     "implementation and validation. Do not call Plan for general questions, "
                     "conversations, explanations, or tasks that can be completed directly."
                 ),
-            ),
+            )
         ]
         for t in turns[-10:]:
             messages.append(HumanMessage(content=t["prompt"]))
@@ -305,8 +307,11 @@ async def run_workflow(
         messages = [
             SystemMessage(
                 content="You are an expert senior software engineer and coder. "
-                "Your task is to write clean, efficient, robust, well-documented, and production-ready code "
-                "following the specific instructions provided by the orchestrator."
+                        "Your task is to write clean, efficient, robust, well-documented, and production-ready code "
+                        "following the specific instructions provided by the orchestrator.\n\n"
+                        "You have access to the `search_memory` tool, which you can use to:\n"
+                        "1. Discover and retrieve tools/capabilities by setting `collection='tools'` when you need additional functions to fulfill a request.\n"
+                        "2. Retrieve relevant long-term memories, preferences, technical requirements, or context from past conversations by setting `collection='chat_history'`."
             ),
             HumanMessage(content=f"Instructions: {state.plan.coder_instructions}"),
         ]
@@ -327,6 +332,9 @@ async def run_workflow(
                 "Your task is to rigorously review, test, and audit the code produced by the coder agent."
                 "When you have everything you need, submit your final answer by calling the Verdict tool."
                 "Do not write the answer as plain text."
+                "You have access to the `search_memory` tool, which you can use to:\n"
+                "1. Discover and retrieve tools/capabilities by setting `collection='tools'` when you need additional functions to fulfill a request.\n"
+                "2. Retrieve relevant long-term memories, preferences, technical requirements, or context from past conversations by setting `collection='chat_history'`."
             ),
             HumanMessage(content=(
                 f"Instructions: {state.plan.validator_instructions}\n\n"
