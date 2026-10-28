@@ -1,7 +1,6 @@
 import asyncio
-from typing import cast
+from typing import Any
 import chromadb
-from chromadb import WhereDocument
 from mcp.client.streamable_http import streamable_http_client
 from mcp import ClientSession
 import json
@@ -29,8 +28,8 @@ class rag:
         return f"updated {id}"
 
 
-    def search_memory(self, query: str, collection:str, n_results: int = 3, contains: str | None = None):
-        """Semantic search. Returns a flat, JSON-safe list of hits."""
+    def search_memory(self, query: list[str], collection: str, n_results: int = 6, contains: str | None = None):
+        """Semantic search per query. Returns a list of hit lists: list[list[dict]]."""
         if collection not in (TOOLS, CHAT_HISTORY):
             raise ValueError(f"Unknown collection '{collection}'")
         try:
@@ -38,28 +37,53 @@ class rag:
         except Exception as e:
             raise ValueError(f"Collection '{collection}' not found") from e
 
-        where_document: WhereDocument | None = None
+        if col.count() == 0:
+            return [[] for _ in query]
 
+        where_document: dict | None = None
         if contains:
             where_document = {"$contains": contains}
 
-        res = col.query(
-            query_texts=[query],
-            n_results=min(n_results, col.count()),
-            where_document=where_document
-        )
+        all_hits: list[list[dict]] = []
+        actual_n_results = min(n_results, col.count())
 
-        hits = []
-        for i, doc_id in enumerate(res["ids"][0]):
-            hit = {
-                "id": doc_id,
-                "text": res["documents"][0][i],
-                "distance": res["distances"][0][i],
-            }
-            if collection == TOOLS:
-                hit["input_schema"] = json.loads(cast(str, res["metadatas"][0][i]["input_schema"]))
-            hits.append(hit)
-        return hits
+        for q in query:
+            res = col.query(
+                query_texts=[q],
+                n_results=actual_n_results,
+                where_document=where_document
+            )
+
+            query_hits: list[dict] = []
+
+            if res and res.get("ids") and res["ids"][0]:
+                for i, doc_id in enumerate(res["ids"][0]):
+                    hit: dict[str, Any] = {
+                        "id": doc_id,
+                        "text": res["documents"][0][i],
+                        "distance": res["distances"][0][i],
+                    }
+
+                    if collection == TOOLS and res.get("metadatas") and res["metadatas"][0]:
+                        meta = res["metadatas"][0][i]
+                        if meta and meta.get("input_schema"):
+                            schema_val = meta["input_schema"]
+                            hit["input_schema"] = json.loads(schema_val) if isinstance(schema_val, str) else schema_val
+
+                    query_hits.append(hit)
+
+            all_hits.append(query_hits)
+
+        seen_ids = set()
+        flat_hits: list[dict] = []
+
+        for sublist in all_hits:
+            for hit in sublist:
+                if hit["id"] not in seen_ids:
+                    seen_ids.add(hit["id"])
+                    flat_hits.append(hit)
+
+        return flat_hits
 
 
 async def add_mcp_tools_to_collection(store: rag) -> None:

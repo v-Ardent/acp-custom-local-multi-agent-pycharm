@@ -235,6 +235,17 @@ async def run_workflow(
                     "needed to fulfill the request, or retrieve relevant facts, preferences, context, "
                     "and information about the user from previous conversations. "
 
+                    "The search_memory tool accepts a LIST of search queries in a single tool call (e.g. query=['capability 1', 'capability 2']). "
+                    "Whenever you need to look up multiple capabilities or distinct topics at once, pass all of your search terms together in a single tool call rather than making multiple sequential calls. "
+                    "When using search_memory with collection='tools', maximize your discovery rate by diversifying your list of queries: "
+                    "1. Decompose complex user requests into separate functional pillars or sub-tasks. "
+                    "2. Use both high-level categories and specific action verbs (e.g., instead of just 'manage files', query ['file management', 'read write files', 'directory listing']). "
+                    "3. Include technical synonyms or alternative naming conventions since tool descriptions vary. "
+                    "4. Keep each query short (1-4 words) to optimize embedding similarity."
+                    "Example: If the user asks 'Can you fetch my recent GitHub issues and save them to a CSV?', "
+                    "do not search a single broad phrase. Instead, call search_memory with a diverse list: "
+                    "query=['github issues api', 'repository tracker', 'csv export', 'file generation']."
+
                     "Use search_memory with collection='tools' to discover tools and capabilities "
                     "that may help accomplish the task. Search using concise descriptions of the "
                     "required capability, then use the discovered tool information to determine "
