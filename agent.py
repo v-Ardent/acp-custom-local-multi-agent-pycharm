@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from typing import Any
 from mcp.client.streamable_http import streamable_http_client
 from ollama import AsyncClient
@@ -48,7 +49,6 @@ class NoesisAgent(Agent):
 
     def __init__(self) -> None:
         """Initialize the LLM client, MCP state, RAG system, and session history."""
-        self._next_session_id = 0
         self._sessions: set[str] = set()
 
         self._llm = AsyncClient()
@@ -151,7 +151,6 @@ class NoesisAgent(Agent):
             _meta=None
         )
 
-
     async def new_session(
             self,
             cwd: str,
@@ -159,11 +158,11 @@ class NoesisAgent(Agent):
             mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio | AcpMcpServer] | None = None,
             **kwargs: Any,
     ) -> NewSessionResponse:
-        """Create a session, assign its ID, and configure the requested HTTP MCP server."""
+        """Create a session with a globally unique ID and configure the requested HTTP MCP server."""
         logging.info("Received new session request")
-        session_id = str(self._next_session_id)
-        self._next_session_id += 1
+        session_id = uuid.uuid4().hex
         self._sessions.add(session_id)
+        self.session_history.setdefault(session_id, AgentHistory())
 
         for s in mcp_servers or []:
             if isinstance(s, HttpMcpServer):
@@ -258,7 +257,7 @@ class NoesisAgent(Agent):
     async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Handle an extension method call and return a placeholder response."""
         logging.info("Received extension method call: %s", method)
-        return {"example": "response"}
+        return {}
 
 
     async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
