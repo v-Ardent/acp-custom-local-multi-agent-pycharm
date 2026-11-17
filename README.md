@@ -121,16 +121,20 @@ In PyCharm, enable the MCP server (**Settings → Tools → MCP Server**). The a
    }
    ```
 
-3. Configure the MCP connection in PyCharm (**File | Settings | Tools | AI Assistant | Model Context Protocol (MCP)**):
+3. Configure the MCP connection in PyCharm (File | Settings | AI | Air | MCP Servers | edit MCPs):
 
    ```json
    {
-     "mcpServers": {
-       "MCP_name": {
-         "url": "url_of_the_pycharm_mcp_server"
-       }
-     }
-   }
+    "mcpServers": {
+        "pycharm_mcp": {
+            "type": "streamable-http",
+            "url": "http://127.0.0.1:XXXXX/stream",
+            "headers": {
+                "IJ_MCP_SERVER_PROJECT_PATH": folder_path
+            }
+        }
+    }
+}
    ```
 
 4. Open the AI Chat panel, select **Noesis**, and start a session.
