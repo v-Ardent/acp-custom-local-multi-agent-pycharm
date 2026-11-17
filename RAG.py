@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any
+from typing import Any, Mapping, cast
 import chromadb
 from mcp.client.streamable_http import streamable_http_client
 from mcp import ClientSession
@@ -15,10 +15,10 @@ class rag:
         self.client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 
 
-    def add_to_collection(self, document: str, id: str,metadata: dict[str, str | int | float | bool] | None = None) -> str:
+    def add_to_collection(self, document: str, id: str, metadata: str | int | float | bool | None | None = None) -> str:
         """Store a new memory. Chroma metadata must be flat scalars and non-empty."""
         col = self.client.get_or_create_collection(CHAT_HISTORY)
-        col.upsert(ids=[id], documents=[document], metadatas=[metadata] if metadata else None)
+        col.upsert(ids=[id], documents=[document], metadatas = cast(list[Mapping[str, Any]] | None,[metadata] if metadata is not None else None,))
         return f"stored {id}"
 
 
@@ -98,10 +98,9 @@ async def add_mcp_tools_to_collection(store: rag) -> None:
         pass
     collection = store.client.create_collection(TOOLS)
 
-    collection.add(
-        ids=[t.name for t in tools],
-        documents=[f"{t.name}: {t.description or ''}".strip() for t in tools],
-        metadatas=[
+    metadatas_mapping = cast(
+        list[Mapping[str, Any]],
+        [
             {
                 "title": getattr(t, "title", None) or "",
                 "description": t.description or t.name,
@@ -113,6 +112,13 @@ async def add_mcp_tools_to_collection(store: rag) -> None:
             for t in tools
         ],
     )
+
+    collection.add(
+        ids=[t.name for t in tools],
+        documents=[f"{t.name}: {t.description or ''}".strip() for t in tools],
+        metadatas=metadatas_mapping,
+    )
+
     print(f"Indexed {len(tools)} tools: {[t.name for t in tools]}")
 
 

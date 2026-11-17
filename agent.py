@@ -28,7 +28,7 @@ from acp.schema import (
     McpServerStdio,
     SseMcpServer,
     AgentCapabilities, PromptCapabilities, McpCapabilities, SessionCapabilities,
-    AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities,
+    AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities, AcpMcpServer,
 )
 
 
@@ -156,7 +156,7 @@ class NoesisAgent(Agent):
             self,
             cwd: str,
             additional_directories: list[str] | None = None,
-            mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+            mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio | AcpMcpServer] | None = None,
             **kwargs: Any,
     ) -> NewSessionResponse:
         """Create a session, assign its ID, and configure the requested HTTP MCP server."""
@@ -177,7 +177,7 @@ class NoesisAgent(Agent):
             self,
             cwd: str,
             session_id: str,
-            mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+            mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio | AcpMcpServer] | None = None,
             additional_directories: list[str] | None = None,
             **kwargs: Any,
     ) -> LoadSessionResponse | None:
