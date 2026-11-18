@@ -30,17 +30,103 @@ from acp.schema import (
     SseMcpServer,
     AgentCapabilities, PromptCapabilities, McpCapabilities, SessionCapabilities,
     AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities, AcpMcpServer,
+    TextContentBlock, ImageContentBlock, AudioContentBlock, ResourceContentBlock
 )
 
 
-def extract_text(block: Any) -> str:
-    """Extract text from a dictionary or an object containing a text attribute."""
-    if isinstance(block, dict):
-        return str(block.get("text", ""))
+def acp_to_langchain_blocks(acp_prompt: list) -> list[dict]:
+    """Convert ACP ContentBlocks into LangChain multimodal content blocks."""
+    lc_blocks = []
 
-    text = getattr(block, "text", None)
+    for block in acp_prompt:
+        if isinstance(block, TextContentBlock):
+            text = getattr(block, "text", None)
+            type = getattr(block, "type", None)
+            field_meta = getattr(block, "field_meta", None)
+            lc_blocks.append({
+                "type": type,
+                "text": text,
+                "extras": field_meta
+            })
 
-    return text if isinstance(text, str) else ""
+        elif isinstance(block, ImageContentBlock):
+            data = getattr(block, "data", None)
+            mime_type = getattr(block, "mimeType", None)
+            type = getattr(block, "type", None)
+            uri = getattr(block, "uri", None)
+            field_meta = getattr(block, "field_meta", None)
+            lc_blocks.append({
+                "type": type,
+                "base64": data,
+                "mime_type": mime_type,
+                "uri": uri,
+                "extras": field_meta
+            })
+
+        elif isinstance(block, AudioContentBlock):
+            data = getattr(block, "data", None)
+            mime_type = getattr(block, "mimeType", None)
+            lc_blocks.append({
+                "type": "audio",
+                "base64": data,
+                "mime_type": mime_type,
+            })
+
+        # The pycharm acp client treats file as TextContentBlock, hence, this block is pretty useless until a future update of jetbrains
+        elif isinstance(block, ResourceContentBlock):
+            resource = getattr(block, "resource", None)
+            uri = getattr(resource, "uri", None)
+            mime_type = getattr(resource, "mimeType", None)
+            text_content = getattr(resource, "text", None)
+            blob_content = getattr(resource, "blob", None)
+            # Handle text-based resources (scripts, markdown, code files)
+            if text_content is not None:
+                lc_blocks.append({
+                    "type": "text",
+                    "text": f"[Resource URI: {uri}]\n{text_content}",
+                })
+            # Handle binary/blob resources (PDFs, images, archives)
+            elif blob_content is not None:
+                lc_blocks.append({
+                    "type": "image" if mime_type.startswith("image/") else "file",
+                    "base64": blob_content,
+                    "mime_type": mime_type,
+                    "uri": uri,
+                })
+
+    output_lines = []
+
+    for i, block in enumerate(acp_prompt or []):
+        # Dynamically grab the class name (e.g., "TextContentBlock", "ImageContentBlock", etc.)
+        block_type_name = "unknown"
+        if isinstance(block, dict):
+            block_type_name = block.get("type", "UnknownDict")
+
+
+        # Create a nice header for each block
+        header = f"=== [Block {i + 1}: {block_type_name}] ==="
+        output_lines.append(header)
+
+        # Convert Pydantic object to a serializable dictionary
+        if hasattr(block, "model_dump"):  # Pydantic v2
+            block_data = block.model_dump()
+        elif hasattr(block, "dict"):  # Pydantic v1
+            block_data = block.dict()
+        elif isinstance(block, dict):
+            block_data = block
+        else:
+            block_data = {"raw_content": str(block)}
+
+        # Append the formatted JSON/dictionary contents under the header
+        output_lines.append(json.dumps(block_data, indent=2))
+        output_lines.append("\n" + "-" * 50 + "\n")
+
+    # Write the formatted log with headers to your file
+    file_path = r"C:\Users\megag\PycharmProjects\acp-custom-local-multi-agent-pycharm\acp_transformer.txt"
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(lc_blocks, indent=2))
+
+    return lc_blocks
 
 
 class NoesisAgent(Agent):
@@ -235,11 +321,11 @@ class NoesisAgent(Agent):
     async def prompt(self, session_id: str, prompt: Any, **kwargs: Any) -> PromptResponse:
         """Process a user prompt through the workflow and return the completion response."""
         self._sessions.add(session_id)
-        text = "\n".join(extract_text(b) for b in prompt)
+        prompt = acp_to_langchain_blocks(prompt)
 
         try:
             await self._get_mcp()
-            await run_workflow(text, self._send, session_id, self._call_tool, self._active_tools, self.session_history)
+            await run_workflow(prompt, self._send, session_id, self._call_tool, self._active_tools, self.session_history)
 
         except Exception as exc:
             await self._send(

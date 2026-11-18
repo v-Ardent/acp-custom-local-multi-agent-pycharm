@@ -43,7 +43,7 @@ class Plan(BaseModel):
 
 
 class State(BaseModel):
-    user_prompt: str
+    user_prompt: list[dict]
     plan: Plan | None = None
     completed_task: Annotated[list, operator.add] = Field(default_factory=list)
     response: Annotated[list[str], operator.add] = Field(default_factory=list)
@@ -196,7 +196,7 @@ async def tool_call(
 
 
 async def run_workflow(
-    user_prompt: str,
+    user_prompt: list[dict],
     send_to_acp: Callable[[str, Any], Coroutine[Any, Any, None]],
     session_id: str,
     tool_call_rag: Callable[[str, str, dict[str, Any]], Coroutine[Any, Any, str]],
@@ -294,11 +294,11 @@ async def run_workflow(
             messages.append(HumanMessage(
                 content=f"Tool results gathered so far (by all agents):\n{tool_context}"))
 
-        messages.append(HumanMessage(content=state.user_prompt))
-
         if state.completed_task:
             last = state.completed_task[-1]
-            messages.append(HumanMessage(content=f"Previous validation feedback: {last['output']}"))
+            messages.append(build_user_message(state.user_prompt, additional_text=f"Previous validation feedback: {last['output']}"))
+        else:
+            messages.append(build_user_message(state.user_prompt))
 
         result = await tool_call(MAX_ITERATIONS, llm, tools, messages, session_id, tool_call_rag, send_to_acp,
                                  output_schema=Plan, require_schema=False, agent_name="orchestrator", session_history=session_history)
@@ -315,6 +315,9 @@ async def run_workflow(
         if state.plan is None:
             raise ValueError("The orchestrator must generate a plan before coding.")
 
+        coder_prompt_text = f"Instructions: {state.plan.coder_instructions}"
+        user_msg = build_user_message(state.user_prompt, additional_text=coder_prompt_text)
+
         messages = [
             SystemMessage(
                 content="You are an expert senior software engineer and coder. "
@@ -324,7 +327,7 @@ async def run_workflow(
                         "1. Discover and retrieve tools/capabilities by setting `collection='tools'` when you need additional functions to fulfill a request.\n"
                         "2. Retrieve relevant long-term memories, preferences, technical requirements, or context from past conversations by setting `collection='chat_history'`."
             ),
-            HumanMessage(content=f"Instructions: {state.plan.coder_instructions}"),
+            user_msg,
         ]
 
         result = await tool_call(MAX_ITERATIONS, llm, tools, messages, session_id, tool_call_rag, send_to_acp, require_schema=False, agent_name="coder", session_history=session_history)
@@ -337,6 +340,13 @@ async def run_workflow(
             raise ValueError("The orchestrator must generate a plan before validation.")
 
         code = state.completed_task[-1]["output"]
+        validator_prompt_text = (
+            f"Instructions: {state.plan.validator_instructions}\n\n"
+            f"Acceptance criteria: {state.plan.acceptance_criteria}\n\n"
+            f"Code to review:\n{code}"
+        )
+        user_msg = build_user_message(state.user_prompt, additional_text=validator_prompt_text)
+
         messages = [
             SystemMessage(
                 content="You are an expert QA, security, and test engineer. "
@@ -347,11 +357,7 @@ async def run_workflow(
                 "1. Discover and retrieve tools/capabilities by setting `collection='tools'` when you need additional functions to fulfill a request.\n"
                 "2. Retrieve relevant long-term memories, preferences, technical requirements, or context from past conversations by setting `collection='chat_history'`."
             ),
-            HumanMessage(content=(
-                f"Instructions: {state.plan.validator_instructions}\n\n"
-                f"Acceptance criteria: {state.plan.acceptance_criteria}\n\n"
-                f"Code to review:\n{code}"
-            )),
+            user_msg,
         ]
 
         verdict = await tool_call(MAX_ITERATIONS, llm, tools, messages, session_id, tool_call_rag, send_to_acp, output_schema=Verdict, require_schema=True, agent_name="validator", session_history=session_history)
@@ -368,6 +374,8 @@ async def run_workflow(
             (t["output"] for t in reversed(state.completed_task) if t["agent"] == "coder"),
             "No code available.",
         )
+        synthesizer_prefix = f"Final Implemented Code:\n{latest_code}"
+        user_msg = build_user_message(state.user_prompt, additional_text=synthesizer_prefix)
 
         messages = [
             SystemMessage(
@@ -376,17 +384,41 @@ async def run_workflow(
                         "final response should accomplish, and treat the Final Implemented Code as the "
                         "solution you wrote and the source of truth for what was implemented."
             ),
-            HumanMessage(
-                content=(
-                    f"Original User Request: {state.user_prompt}\n\n"
-                    f"Final Implemented Code:\n{latest_code}"
-                )
-            ),
+            user_msg,
         ]
 
         response = await llm.ainvoke(messages)
         return {"response": [response.content]}
 
+    def build_user_message(user_prompt: list[dict], additional_text: str = "") -> HumanMessage:
+        """
+        Builds a LangChain HumanMessage combining text content blocks and
+        extracted image dictionaries from state.user_prompt.
+        """
+        # Extract all text blocks
+        text_content = "\n".join(c.get("text", "") for c in user_prompt if c.get("type") == "text")
+        log_message = f"{additional_text}\n\nOriginal User Request:\n{text_content}" if additional_text else text_content
+
+        # Build standard content block dictionaries that LangChain expects
+        content_blocks: str | list[str | dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": log_message
+            }
+        ]
+
+        # Append image blocks as dictionaries
+        for block in user_prompt:
+            if block.get("type") == "image":
+                content_blocks.append({
+                    "type": "image",
+                    "base64": block.get("base64", ""),
+                    "mime_type": block.get("mime_type", "image/png"),
+                    "uri": block.get("uri"),
+                    "extras": block.get("extras")
+                })
+
+        return HumanMessage(content=content_blocks)
 
     def route_validation(state: State):
         if state.is_validated:
