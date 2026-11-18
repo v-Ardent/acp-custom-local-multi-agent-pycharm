@@ -134,8 +134,6 @@ In PyCharm, enable the MCP server (**Settings → Tools → MCP Server**). The a
             }
         }
     }
-}
-   ```
 
 4. Open the AI Chat panel, select **Noesis**, and start a session.
 

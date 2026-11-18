@@ -79,13 +79,12 @@ def acp_to_langchain_blocks(acp_prompt: list) -> list[dict]:
             mime_type = getattr(resource, "mimeType", None)
             text_content = getattr(resource, "text", None)
             blob_content = getattr(resource, "blob", None)
-            # Handle text-based resources (scripts, markdown, code files)
+
             if text_content is not None:
                 lc_blocks.append({
                     "type": "text",
                     "text": f"[Resource URI: {uri}]\n{text_content}",
                 })
-            # Handle binary/blob resources (PDFs, images, archives)
             elif blob_content is not None:
                 lc_blocks.append({
                     "type": "image" if mime_type.startswith("image/") else "file",
@@ -93,38 +92,6 @@ def acp_to_langchain_blocks(acp_prompt: list) -> list[dict]:
                     "mime_type": mime_type,
                     "uri": uri,
                 })
-
-    output_lines = []
-
-    for i, block in enumerate(acp_prompt or []):
-        # Dynamically grab the class name (e.g., "TextContentBlock", "ImageContentBlock", etc.)
-        block_type_name = "unknown"
-        if isinstance(block, dict):
-            block_type_name = block.get("type", "UnknownDict")
-
-
-        # Create a nice header for each block
-        header = f"=== [Block {i + 1}: {block_type_name}] ==="
-        output_lines.append(header)
-
-        # Convert Pydantic object to a serializable dictionary
-        if hasattr(block, "model_dump"):  # Pydantic v2
-            block_data = block.model_dump()
-        elif hasattr(block, "dict"):  # Pydantic v1
-            block_data = block.dict()
-        elif isinstance(block, dict):
-            block_data = block
-        else:
-            block_data = {"raw_content": str(block)}
-
-        # Append the formatted JSON/dictionary contents under the header
-        output_lines.append(json.dumps(block_data, indent=2))
-        output_lines.append("\n" + "-" * 50 + "\n")
-
-    # Write the formatted log with headers to your file
-    file_path = r"C:\Users\megag\PycharmProjects\acp-custom-local-multi-agent-pycharm\acp_transformer.txt"
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(lc_blocks, indent=2))
 
     return lc_blocks
 
