@@ -468,7 +468,6 @@ async def run_workflow(
 
             if node != current_node:
                 current_node = node
-                await send_to_acp(session_id, update_agent_message_text(f"Agent {current_node} is generating his answer."))
 
             reasoning = chunk.additional_kwargs.get("reasoning_content")
             if reasoning:

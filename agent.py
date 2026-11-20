@@ -1,8 +1,11 @@
 import asyncio
 import uuid
 from typing import Any
+import sys
+from pathlib import Path
+from logging.handlers import RotatingFileHandler
+import httpx
 from mcp.client.streamable_http import streamable_http_client
-from ollama import AsyncClient
 import json
 from mcp import ClientSession
 import logging
@@ -32,6 +35,33 @@ from acp.schema import (
     AgentAuthCapabilities, LogoutCapabilities, SessionDeleteCapabilities, AcpMcpServer,
     TextContentBlock, ImageContentBlock, AudioContentBlock, ResourceContentBlock
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+ERROR_LOG_PATH = PROJECT_ROOT / "agent_errors.log"
+
+
+def setup_logging() -> None:
+    """Log to stderr as before, and write ERROR+ records to a file in the project root."""
+    logging.basicConfig(level=logging.INFO)
+
+    file_handler = RotatingFileHandler(
+        ERROR_LOG_PATH,
+        maxBytes=2_000_000,
+        backupCount=3,
+        encoding="utf-8",
+        delay=True,
+    )
+    file_handler.setLevel(logging.ERROR)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    logging.getLogger().addHandler(file_handler)
+
+    def _excepthook(exc_type, exc, tb):
+        logging.getLogger().critical("Uncaught exception", exc_info=(exc_type, exc, tb))
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = _excepthook
 
 
 def acp_to_langchain_blocks(acp_prompt: list) -> list[dict]:
@@ -103,36 +133,47 @@ class NoesisAgent(Agent):
     def __init__(self) -> None:
         """Initialize the LLM client, MCP state, RAG system, and session history."""
         self._sessions: set[str] = set()
-
-        self._llm = AsyncClient()
         self._mcp: ClientSession | None = None
         self._ollama_tools: list[dict[str, Any]] = []
         self._mcp_ready = asyncio.Event()
         self._mcp_stop = asyncio.Event()
         self._mcp_task: asyncio.Task | None = None
-        self._mcp_error: Exception | None = None
+        self._mcp_error: BaseException | Exception | None = None
         self._rag = rag()
         self._discovered: dict[str, dict[str, dict]] = {}
         self._mcp_cfg: HttpMcpServer | None = None
         self.context_size = 0
         self.session_history: dict[str, AgentHistory] = {}
 
-
     async def _run_mcp(self) -> None:
         """Establish the MCP connection, initialize tools, and wait for shutdown."""
         try:
             cfg = self._mcp_cfg
-            url = cfg.url if cfg and cfg.name == "pycharm_MCP" else PYCHARM_MCP_URL
-            async with streamable_http_client(url) as streams:
-                async with ClientSession(streams[0], streams[1]) as mcp:
-                    await mcp.initialize()
-                    self._ollama_tools = list(CORE_TOOLS)
-                    self._mcp = mcp
-                    self._mcp_ready.set()
-                    await self._mcp_stop.wait()
-        except Exception as exc:
-            logging.exception("MCP connection failed")
-            self._mcp_error = exc
+            if cfg is not None:
+                url = cfg.url
+                headers = {h.name: h.value for h in (cfg.headers or [])}
+            else:
+                url = PYCHARM_MCP_URL
+                headers = {}
+
+            logging.info("Connecting to MCP at %s (header names: %s)", url, list(headers))
+
+            async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
+                async with streamable_http_client(url, http_client=http_client) as streams:
+                    async with ClientSession(streams[0], streams[1]) as mcp:
+                        await mcp.initialize()
+                        self._ollama_tools = list(CORE_TOOLS)
+                        self._mcp = mcp
+                        self._mcp_ready.set()
+                        await self._mcp_stop.wait()
+        except BaseException as exc:
+            leaf = exc
+            while isinstance(leaf, BaseExceptionGroup) and leaf.exceptions:
+                leaf = leaf.exceptions[0]
+            logging.error("MCP connection failed: %r", leaf, exc_info=True)
+            self._mcp_error = leaf if isinstance(leaf, Exception) else exc
+            if isinstance(exc, asyncio.CancelledError):
+                raise
         finally:
             self._mcp = None
             self._mcp_ready.set()
@@ -141,15 +182,19 @@ class NoesisAgent(Agent):
     def _active_tools(self, session_id: str) -> list[dict]:
         return self._ollama_tools + list(self._discovered.get(session_id, {}).values())
 
-
     async def _get_mcp(self) -> ClientSession:
         """Start the MCP connection if necessary and return the active session."""
-        if self._mcp_task is None:
+        if self._mcp_task is None or self._mcp_task.done():
+            # Reset state so a failed attempt can be retried
+            self._mcp_ready.clear()
+            self._mcp_stop.clear()
+            self._mcp_error = None
             self._mcp_task = asyncio.create_task(self._run_mcp())
         await self._mcp_ready.wait()
         if self._mcp is None:
+            err = self._mcp_error
             self._mcp_task = None
-            raise RuntimeError(f"MCP unavailable: {self._mcp_error}")
+            raise RuntimeError(f"MCP unavailable: {err!r}")
         return self._mcp
 
 
@@ -220,7 +265,13 @@ class NoesisAgent(Agent):
         for s in mcp_servers or []:
             if isinstance(s, HttpMcpServer):
                 self._mcp_cfg = s
+                logging.info(
+                    "MCP server from client: name=%s url=%s headers=%s",
+                    s.name, s.url, [h.name for h in (s.headers or [])],
+                )
                 break
+        else:
+            logging.warning("No HttpMcpServer received from client; falling back to PYCHARM_MCP_URL")
 
         return NewSessionResponse(sessionId=session_id, configOptions=None, _meta=None)
 
@@ -294,7 +345,9 @@ class NoesisAgent(Agent):
             await self._get_mcp()
             await run_workflow(prompt, self._send, session_id, self._call_tool, self._active_tools, self.session_history)
 
+
         except Exception as exc:
+            logging.exception("Prompt failed for session %s", session_id)
             await self._send(
                 session_id, update_agent_message_text(str(exc))
             )
@@ -325,7 +378,7 @@ class NoesisAgent(Agent):
 
 async def main() -> None:
     """Configure logging, run the agent, and clean up its resources."""
-    logging.basicConfig(level=logging.INFO)
+    setup_logging()
     agent = NoesisAgent()
 
     try:
