@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Annotated, List, Callable, Any, Coroutine, TypedDict
+from typing import Annotated, List, Callable, Any, Coroutine, TypedDict, Hashable
 import operator
 from uuid import uuid4
 from acp import update_agent_thought, update_agent_message_text, start_tool_call, update_tool_call, tool_content, text_block
@@ -118,6 +118,9 @@ async def tool_call(
         final: ToolCall | None = next((c for c in response.tool_calls if c["name"] == schema_tool), None)
         if final:
             final_id = final["id"] or f"{final['name']}-{uuid4()}"
+            if not output_schema:
+                raise RuntimeError("No output_schema configured")
+
             try:
                 answer = output_schema(**final["args"])
                 await send_to_acp(session_id, start_tool_call(final_id, f"Running {final['name']}", kind=None, status="in_progress", raw_input=final["args"]))
@@ -132,7 +135,7 @@ async def tool_call(
                         status="error",
                     ))
                 continue
-            payload = answer.model_dump()
+            payload = answer.model_dump() if isinstance(answer, BaseModel) else answer
             logging.info(payload)
 
             await send_to_acp(
@@ -449,13 +452,19 @@ async def run_workflow(
     builder.add_node("validator", validator)
     builder.add_node("synthesizer", synthesizer)
 
+    orchestrator_path_map: dict[Hashable, str] = {
+        "coder": "coder",
+        "no_plan_needed": END,
+    }
+    validation_path_map: dict[Hashable, str] = {
+        "Accepted": "synthesizer",
+        "Rejected": "orchestrator",
+    }
+
     builder.add_edge(START, "orchestrator")
-    builder.add_conditional_edges("orchestrator", route_orchestrator, {"coder": "coder", "no_plan_needed": END})
+    builder.add_conditional_edges("orchestrator", route_orchestrator, orchestrator_path_map)
     builder.add_edge("coder", "validator")
-    builder.add_conditional_edges(
-        "validator", route_validation,
-        {"Accepted": "synthesizer", "Rejected": "orchestrator"},
-    )
+    builder.add_conditional_edges("validator", route_validation, validation_path_map)
     builder.add_edge("synthesizer", END)
     graph = builder.compile()
 
